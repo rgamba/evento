@@ -1,25 +1,49 @@
 mod operations;
 
-use anyhow::{Error, Result, format_err};
+use anyhow::{format_err, Error, Result};
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+use uuid::Uuid;
+
+pub static CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub static RUSTC_VERSION: &str = env!("RUSTC_VERSION");
 
 pub trait Workflow {
     fn run(&mut self) -> Result<WorkflowStatus, WorkflowError>;
     fn id(&self) -> uuid::Uuid;
+    fn name(&self) -> String;
     fn execution_results(&self) -> Vec<OperationResult>;
-    fn find_execution_result(&self, operation_name: String, iteration: usize) -> Option<OperationResult> {
-        self.execution_results().clone()
+    fn find_execution_result(
+        &self,
+        operation_name: String,
+        iteration: usize,
+    ) -> Option<OperationResult> {
+        self.execution_results()
+            .clone()
             .into_iter()
             .find(|r| r.operation_name == operation_name && r.iteration == iteration)
     }
 }
 
+pub trait WorkflowFactory {
+    fn create(&self, id: Uuid, execution_results: Vec<OperationResult>) -> Box<dyn Workflow>;
+}
+
+pub struct WorkflowDeclaration {
+    pub rustc_version: &'static str,
+    pub core_version: &'static str,
+    pub register: unsafe extern "C" fn(&mut dyn WorkflowFactoryRegistrar),
+}
+
+pub trait WorkflowFactoryRegistrar {
+    fn register_factory(&mut self, workflow_name: String, workflow: Box<dyn WorkflowFactory>);
+}
+
 #[derive(Debug, Clone)]
 pub enum WorkflowStatus {
     Completed,
-    RunNext(Vec<(String, OperationInput)>)
+    RunNext(Vec<(String, OperationInput)>),
 }
 
 #[derive(Debug)]
@@ -53,7 +77,9 @@ pub struct OperationResult {
 
 impl OperationResult {
     pub fn new<T>(result: T, iteration: usize, operation_name: String) -> Result<Self>
-    where T: Serialize + Clone {
+    where
+        T: Serialize + Clone,
+    {
         Ok(Self {
             result: serde_json::to_value(result.clone())?,
             iteration,
@@ -63,8 +89,7 @@ impl OperationResult {
     }
 
     pub fn result<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_value(self.result.clone())
-            .map_err(|err| format_err!("{:?}", err))
+        serde_json::from_value(self.result.clone()).map_err(|err| format_err!("{:?}", err))
     }
 }
 
@@ -82,21 +107,21 @@ impl OperationInput {
     pub fn new_with_iteration<T: Serialize>(value: T, iteration: usize) -> Result<Self> {
         Ok(Self {
             input: serde_json::to_value(value)?,
-            iteration
+            iteration,
         })
     }
 
     pub fn value<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_value(self.input.clone())
-            .map_err(|err| format_err!("{:?}", err))
+        serde_json::from_value(self.input.clone()).map_err(|err| format_err!("{:?}", err))
     }
 }
 
 enum RunResult<T> {
     Return((String, OperationInput)),
-    Result(T)
+    Result(T),
 }
 
+#[macro_export]
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) =>  {{
         match _run_internal!($self, $op<$result_type>($arg)) {
@@ -109,7 +134,7 @@ macro_rules! run {
 }
 
 macro_rules! _run_internal {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) =>  {{
+    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) => {{
         let operation_name = stringify!($op).to_string();
         let iteration = $self.iteration_counter(&operation_name);
 
@@ -126,6 +151,7 @@ macro_rules! _run_internal {
     }};
 }
 
+#[macro_export]
 macro_rules! run_all {
     ( $self:ident, $( $op:ident <$result_type:ident> ($arg:expr) ),+ $(,)* ) =>  {{
         let mut results = Vec::new();
@@ -149,12 +175,26 @@ macro_rules! run_all {
     }};
 }
 
+#[macro_export]
+macro_rules! export_workflow {
+    ($register:expr) => {
+        #[doc(hidden)]
+        #[no_mangle]
+        pub static workflow_declaration: $crate::WorkflowDeclaration =
+            $crate::WorkflowDeclaration {
+                rustc_version: $crate::RUSTC_VERSION,
+                core_version: $crate::CORE_VERSION,
+                register: $register,
+            };
+    };
+}
+
 #[cfg(test)]
-mod tests { 
+mod tests {
     use super::*;
     use crate::operations::SumOperationInput;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
     struct TestWorkflow {
@@ -163,7 +203,7 @@ mod tests {
         iteration_counter_map: HashMap<String, AtomicUsize>,
     }
 
-    impl Workflow for TestWorkflow {
+    impl WorkflowFactory for TestWorkflow {
         fn run(&mut self) -> Result<WorkflowStatus, WorkflowError> {
             let result = run!(self, SumOperation<u64>(SumOperationInput{a: 1, b: 2}));
             assert_eq!(3, result);
@@ -185,29 +225,36 @@ mod tests {
         fn id(&self) -> Uuid {
             Uuid::new_v4()
         }
+
+        fn name(&self) -> String {
+            String::from("TestWorkflow")
+        }
     }
 
     // TODO:automatically add these methods with derive macro
     impl TestWorkflow {
         fn iteration_counter(&self, operation_name: &String) -> usize {
-            self.iteration_counter_map.get(operation_name.as_str()).map_or(0, |v| v.load(Ordering::SeqCst))
+            self.iteration_counter_map
+                .get(operation_name.as_str())
+                .map_or(0, |v| v.load(Ordering::SeqCst))
         }
 
         fn increase_iteration_counter(&mut self, operation_name: &String) {
-            if let Some(count)  = self.iteration_counter_map.get(operation_name.as_str()) {
+            if let Some(count) = self.iteration_counter_map.get(operation_name.as_str()) {
                 count.fetch_add(1, Ordering::SeqCst);
             } else {
-                self.iteration_counter_map.insert(operation_name.clone(), AtomicUsize::new(1));
+                self.iteration_counter_map
+                    .insert(operation_name.clone(), AtomicUsize::new(1));
             }
         }
     }
 
     #[test]
     fn it_works() {
-        let mut wf = TestWorkflow{
+        let mut wf = TestWorkflow {
             results: vec![
-                OperationResult::new(3, 0,String::from("SumOperation")).unwrap(),
-                OperationResult::new(4, 1,String::from("SumOperation")).unwrap(),
+                OperationResult::new(3, 0, String::from("SumOperation")).unwrap(),
+                OperationResult::new(4, 1, String::from("SumOperation")).unwrap(),
             ],
             iteration_counter_map: HashMap::new(),
         };
