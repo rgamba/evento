@@ -1,0 +1,8 @@
+[package]
+name = "evento-engine"
+version = "0.1.0"
+authors = ["Ricardo Gamba Lavin <gamba@fb.com>"]
+edition = "2018"
+
+[dependencies]
+evento-api = { path = "../evento-api" }
