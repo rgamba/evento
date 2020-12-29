@@ -4,6 +4,7 @@ use anyhow::{format_err, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub static CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -11,9 +12,15 @@ pub static RUSTC_VERSION: &str = env!("RUSTC_VERSION");
 
 pub trait Workflow {
     fn run(&mut self) -> Result<WorkflowStatus, WorkflowError>;
+}
+
+pub trait WorkflowMetadata {
     fn id(&self) -> uuid::Uuid;
+
     fn name(&self) -> String;
+
     fn execution_results(&self) -> Vec<OperationResult>;
+
     fn find_execution_result(
         &self,
         operation_name: String,
@@ -38,12 +45,13 @@ pub struct WorkflowDeclaration {
 
 pub trait WorkflowFactoryRegistrar {
     fn register_factory(&mut self, workflow_name: String, workflow: Box<dyn WorkflowFactory>);
+    fn register_operation_factory(&mut self, operation: Arc<dyn Operation>);
 }
 
 #[derive(Debug, Clone)]
 pub enum WorkflowStatus {
     Completed,
-    RunNext(Vec<(String, OperationInput)>),
+    RunNext(Vec<OperationInput>),
 }
 
 #[derive(Debug)]
@@ -62,9 +70,14 @@ impl From<anyhow::Error> for WorkflowError {
 }
 
 pub trait Operation {
+    fn new() -> Self
+    where
+        Self: Sized;
     fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
     fn name(&self) -> &str;
-    fn validate_input(input: &OperationInput);
+    fn validate_input(input: &OperationInput)
+    where
+        Self: Sized;
 }
 
 #[derive(Clone)]
@@ -95,17 +108,22 @@ impl OperationResult {
 
 #[derive(Debug, Clone)]
 pub struct OperationInput {
-    input: serde_json::Value,
+    pub operation_name: String,
+    pub workflow_name: String,
     pub iteration: usize,
+    input: serde_json::Value,
 }
 
 impl OperationInput {
-    pub fn new<T: Serialize>(value: T) -> Result<Self> {
-        Self::new_with_iteration(value, 0)
-    }
-
-    pub fn new_with_iteration<T: Serialize>(value: T, iteration: usize) -> Result<Self> {
+    pub fn new<T: Serialize>(
+        workflow_name: String,
+        operation_name: String,
+        iteration: usize,
+        value: T,
+    ) -> Result<Self> {
         Ok(Self {
+            workflow_name,
+            operation_name,
             input: serde_json::to_value(value)?,
             iteration,
         })
@@ -117,7 +135,7 @@ impl OperationInput {
 }
 
 enum RunResult<T> {
-    Return((String, OperationInput)),
+    Return(OperationInput),
     Result(T),
 }
 
@@ -125,9 +143,7 @@ enum RunResult<T> {
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) =>  {{
         match _run_internal!($self, $op<$result_type>($arg)) {
-            RunResult::Return((operation_name, input)) =>  return Ok(WorkflowStatus::RunNext(vec![
-                (operation_name, input)
-            ])),
+            RunResult::Return(input) =>  return Ok(WorkflowStatus::RunNext(vec![input])),
             RunResult::Result(r) => r
         }
     }};
@@ -137,6 +153,7 @@ macro_rules! _run_internal {
     ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) => {{
         let operation_name = stringify!($op).to_string();
         let iteration = $self.iteration_counter(&operation_name);
+        let workflow_name = $self.name();
 
         if let Some(result) = $self.find_execution_result(operation_name.clone(), iteration) {
             // We already have a result for this execution. Return it
@@ -144,9 +161,10 @@ macro_rules! _run_internal {
             RunResult::Result(result.result::<$result_type>().unwrap())
         } else {
             // Operation has no been executed.
-            let input = OperationInput::new_with_iteration($arg, iteration).unwrap();
+            let input =
+                OperationInput::new(workflow_name, operation_name, iteration, $arg).unwrap();
             $crate::operations::$op::validate_input(&input);
-            RunResult::Return((operation_name, input))
+            RunResult::Return(input)
         }
     }};
 }
@@ -159,8 +177,8 @@ macro_rules! run_all {
 
         $(
             match _run_internal!($self, $op<$result_type>($arg)) {
-                RunResult::Return((operation_name, input)) => {
-                    returns.push((operation_name, input));
+                RunResult::Return(input) => {
+                    returns.push(input);
                 },
                 RunResult::Result(r) => {
                     results.push(r);
@@ -203,7 +221,7 @@ mod tests {
         iteration_counter_map: HashMap<String, AtomicUsize>,
     }
 
-    impl WorkflowFactory for TestWorkflow {
+    impl Workflow for TestWorkflow {
         fn run(&mut self) -> Result<WorkflowStatus, WorkflowError> {
             let result = run!(self, SumOperation<u64>(SumOperationInput{a: 1, b: 2}));
             assert_eq!(3, result);

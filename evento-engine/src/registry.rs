@@ -1,12 +1,14 @@
 use anyhow::{bail, format_err, Result};
 use evento_api::{
-    OperationResult, Workflow, WorkflowDeclaration, WorkflowError, WorkflowFactory, WorkflowStatus,
+    Operation, OperationInput, OperationResult, Workflow, WorkflowDeclaration, WorkflowError,
+    WorkflowFactory, WorkflowStatus,
 };
 use libloading::Library;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::rc::Rc;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct WorkflowFactoryProxy {
@@ -20,20 +22,45 @@ impl WorkflowFactory for WorkflowFactoryProxy {
     }
 }
 
-struct WorkflowFactoryRegistrar {
-    factories: HashMap<String, WorkflowFactoryProxy>,
-    lib: Rc<Library>,
+pub struct OperationProxy {
+    operation: Arc<dyn Operation>,
+    _lib: Rc<Library>,
+}
+
+impl Operation for OperationProxy {
+    fn new() -> Self {
+        unimplemented!()
+    }
+
+    fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
+        self.operation.execute(input)
+    }
+
+    fn name(&self) -> &str {
+        self.operation.name()
+    }
+
+    fn validate_input(input: &OperationInput) {
+        unimplemented!()
+    }
 }
 
 /// This workflow registrar is only used for it to be passed as an argument to the workflow's
 /// `register` method for it to register itself and its passed as a mutable ref.
 /// This is to add a layer of indirection and avoid having the workflow plugin registration have
 /// direct access to our `ExternalWorkflows` struct.
+struct WorkflowFactoryRegistrar {
+    factories: HashMap<String, WorkflowFactoryProxy>,
+    operations: HashMap<String, OperationProxy>,
+    lib: Rc<Library>,
+}
+
 impl WorkflowFactoryRegistrar {
     fn new(lib: Rc<Library>) -> Self {
         Self {
             lib,
             factories: HashMap::default(),
+            operations: HashMap::default(),
         }
     }
 }
@@ -46,6 +73,14 @@ impl evento_api::WorkflowFactoryRegistrar for WorkflowFactoryRegistrar {
         };
         self.factories.insert(workflow_name, proxy);
     }
+
+    fn register_operation_factory(&mut self, operation: Arc<dyn Operation>) {
+        let proxy = OperationProxy {
+            operation,
+            _lib: Rc::clone(&self.lib),
+        };
+        self.operations.insert(operation.name().to_string(), proxy);
+    }
 }
 
 /// This is the main component that will load worflows from external libraries
@@ -53,10 +88,21 @@ impl evento_api::WorkflowFactoryRegistrar for WorkflowFactoryRegistrar {
 pub struct ExternalWorkflows {
     factories: HashMap<String, WorkflowFactoryProxy>,
     libraries: Vec<Rc<Library>>,
+    operations: HashMap<String, OperationProxy>,
+}
+
+impl Default for ExternalWorkflows {
+    fn default() -> Self {
+        Self {
+            factories: HashMap::new(),
+            libraries: Vec::new(),
+            operations: HashMap::new(),
+        }
+    }
 }
 
 impl ExternalWorkflows {
-    pub unsafe fn load<P: AsRef<OsStr>>(&mut self, library_path: P) -> Result<()> {
+    pub unsafe fn load(&mut self, library_path: &str) -> Result<()> {
         // load the library into memory
         let library = Rc::new(Library::new(library_path)?);
 
@@ -77,8 +123,9 @@ impl ExternalWorkflows {
         // Call the plugin declaration's register function so it can register itself.
         (decl.register)(&mut registrar);
 
-        // add all loaded plugins to the functions map
+        // add all loaded plugins to the workflow and operations map
         self.factories.extend(registrar.factories);
+        self.operations.extend(registrar.operations);
         // and make sure ExternalFunctions keeps a reference to the library
         self.libraries.push(library);
 
@@ -102,5 +149,39 @@ impl ExternalWorkflows {
                 )
             })?
             .create(workflow_id, execution_results))
+    }
+
+    pub fn get_operation(&self, operation_name: &str) -> Result<Arc<dyn Operation>> {
+        Ok(self
+            .operations
+            .get(operation_name)
+            .ok_or_else(|| {
+                format_err!(
+                    "Operation with name '{}' not found in registry",
+                    operation_name
+                )
+            })?
+            .operation
+            .clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::registry::ExternalWorkflows;
+    use uuid::Uuid;
+
+    #[test]
+    fn test_works() {
+        let mut external = ExternalWorkflows::default();
+
+        unsafe {
+            external.load("../target/debug/libdemo.dylib").unwrap();
+        }
+
+        let workflow = external
+            .create_workflow("DemoWorkflow", Uuid::new_v4(), Vec::new())
+            .unwrap();
+        assert_eq!(workflow.name(), "DemoWorkflow".to_string());
     }
 }

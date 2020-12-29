@@ -1,0 +1,13 @@
+[package]
+name = "demo"
+version = "0.1.0"
+authors = ["Ricardo Gamba Lavin <gamba@fb.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+evento-api = { path = "../evento-api" }
+evento-derive = { path = "../evento-derive" }
+uuid = { version = "0.8", features = ["serde", "v4"] }
