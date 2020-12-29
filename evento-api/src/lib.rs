@@ -4,6 +4,8 @@ use anyhow::{format_err, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -21,6 +23,10 @@ pub trait WorkflowMetadata {
 
     fn execution_results(&self) -> Vec<OperationResult>;
 
+    fn iteration_counter_map(&mut self) -> &mut HashMap<String, AtomicUsize>;
+
+    fn context<T: DeserializeOwned>(&self) -> Result<T>;
+
     fn find_execution_result(
         &self,
         operation_name: String,
@@ -30,6 +36,21 @@ pub trait WorkflowMetadata {
             .clone()
             .into_iter()
             .find(|r| r.operation_name == operation_name && r.iteration == iteration)
+    }
+
+    fn iteration_counter(&mut self, operation_name: &String) -> usize {
+        self.iteration_counter_map()
+            .get(operation_name.as_str())
+            .map_or(0, |v| v.load(Ordering::SeqCst))
+    }
+
+    fn increase_iteration_counter(&mut self, operation_name: &String) {
+        if let Some(count) = self.iteration_counter_map().get(operation_name.as_str()) {
+            count.fetch_add(1, Ordering::SeqCst);
+        } else {
+            self.iteration_counter_map()
+                .insert(operation_name.clone(), AtomicUsize::new(1));
+        }
     }
 }
 
@@ -161,8 +182,9 @@ macro_rules! _run_internal {
             RunResult::Result(result.result::<$result_type>().unwrap())
         } else {
             // Operation has no been executed.
-            let input =
-                OperationInput::new(workflow_name, operation_name, iteration, $arg).unwrap();
+            let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
+                .unwrap();
+            $self.increase_iteration_counter(&operation_name);
             $crate::operations::$op::validate_input(&input);
             RunResult::Return(input)
         }
@@ -211,59 +233,54 @@ macro_rules! export_workflow {
 mod tests {
     use super::*;
     use crate::operations::SumOperationInput;
+    use std::collections::hash_map::RandomState;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
 
     struct TestWorkflow {
         results: Vec<OperationResult>,
-        //TODO: automatically add this field with macros
         iteration_counter_map: HashMap<String, AtomicUsize>,
+        __context: serde_json::Value,
     }
 
     impl Workflow for TestWorkflow {
         fn run(&mut self) -> Result<WorkflowStatus, WorkflowError> {
+            let context = self.context::<String>()?;
+            assert_eq!("Ricardo".to_string(), context);
+
             let result = run!(self, SumOperation<u64>(SumOperationInput{a: 1, b: 2}));
             assert_eq!(3, result);
             let other_result = run!(self, SumOperation<u64>(SumOperationInput{a: 2, b: 2}));
             assert_eq!(4, other_result);
 
             run_all!(self,
-                SumOperation<u64>(SumOperationInput{a: 1, b: 2}),
+                SumOperation<u64>(SumOperationInput{a: 10, b: 20}),
                 SumOperation<u64>(SumOperationInput{a: 3, b: 4}),
             );
 
             Ok(WorkflowStatus::Completed)
         }
+    }
 
+    impl WorkflowMetadata for TestWorkflow {
         fn execution_results(&self) -> Vec<OperationResult> {
             self.results.clone()
         }
-
         fn id(&self) -> Uuid {
             Uuid::new_v4()
         }
-
         fn name(&self) -> String {
             String::from("TestWorkflow")
         }
-    }
 
-    // TODO:automatically add these methods with derive macro
-    impl TestWorkflow {
-        fn iteration_counter(&self, operation_name: &String) -> usize {
-            self.iteration_counter_map
-                .get(operation_name.as_str())
-                .map_or(0, |v| v.load(Ordering::SeqCst))
+        fn iteration_counter_map(&mut self) -> &mut HashMap<String, AtomicUsize, RandomState> {
+            &mut self.iteration_counter_map
         }
 
-        fn increase_iteration_counter(&mut self, operation_name: &String) {
-            if let Some(count) = self.iteration_counter_map.get(operation_name.as_str()) {
-                count.fetch_add(1, Ordering::SeqCst);
-            } else {
-                self.iteration_counter_map
-                    .insert(operation_name.clone(), AtomicUsize::new(1));
-            }
+        fn context<T: DeserializeOwned>(&self) -> Result<T> {
+            serde_json::from_value(self.__context.clone())
+                .map_err(|e| format_err!("Unable to deserialize workflow context: {:?}", e))
         }
     }
 
@@ -273,10 +290,15 @@ mod tests {
             results: vec![
                 OperationResult::new(3, 0, String::from("SumOperation")).unwrap(),
                 OperationResult::new(4, 1, String::from("SumOperation")).unwrap(),
+                OperationResult::new(7, 3, String::from("SumOperation")).unwrap(),
             ],
             iteration_counter_map: HashMap::new(),
+            __context: "Ricardo".to_string().into(),
         };
         let result = wf.run();
-        panic!("{:?}", result);
+        if let Ok(WorkflowStatus::RunNext(inputs)) = result {
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs.get(0).unwrap().iteration, 2);
+        }
     }
 }

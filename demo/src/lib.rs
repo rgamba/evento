@@ -9,3 +9,10 @@ impl Workflow for DemoWorkflow {
         Ok(WorkflowStatus::Completed)
     }
 }
+
+#[test]
+fn it_works() {
+    let mut wf = DemoWorkflow::new(Uuid::nil(), vec![]);
+    assert!(matches!(wf.run(), Ok(WorkflowStatus::Completed)));
+    assert_eq!(wf.test(), 1);
+}

@@ -16,21 +16,32 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     if let Fields::Named(ref f) = item.fields {
         fields.extend(f.named.iter());
     }
-
-    // Recreate the workflow struct
+    let fields2 = fields.clone();
+    let fields_names: Vec<syn::Ident> = fields.iter().map(|f| f.ident.clone().unwrap()).collect();
+    // Recreate the workflow struct and construct the `new` method
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
             __id: ::uuid::Uuid,
             __operation_results: Vec<OperationResult>,
-            __iteration_counter_map: ::std::collections::HashMap<String, core::sync::atomic::AtomicUsize>,
+            __iteration_counter_map: ::std::collections::HashMap<String, ::core::sync::atomic::AtomicUsize>,
+        }
+        impl #struct_name {
+            fn new(id: ::uuid::Uuid, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self {
+                Self {
+                    __id: id,
+                    __operation_results: operation_results,
+                    #( #fields_names, )*
+                    __iteration_counter_map: ::std::collections::HashMap::new(),
+                }
+            }
         }
     };
     // Create the WorkflowMetadata impl
     let workflow_name = format!("{}", struct_name);
     let metadata_def = quote! {
         impl ::evento_api::WorkflowMetadata for #struct_name {
-            fn id(&self) -> Uuid {
+            fn id(&self) -> ::uuid::Uuid {
                 self.__id.clone()
             }
             fn name(&self) -> String {
@@ -38,6 +49,13 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
             }
             fn execution_results(&self) -> Vec<::evento_api::OperationResult> {
                 self.__operation_results.clone()
+            }
+            fn iteration_counter_map(&mut self) -> &mut ::std::collections::HashMap<String, ::core::sync::atomic::AtomicUsize> {
+                &mut self.__iteration_counter_map
+            }
+            fn context<T: ::serde::de::DeserializeOwned>(&self) -> ::anyhow::Result<T> {
+                ::serde_json::from_value(self.__context.clone())
+                    .map_err(|e| ::anyhow::format_err!("Unable to deserialize workflow context: {:?}", e))
             }
         }
     };
@@ -48,11 +66,10 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
         pub struct #factory_ident;
         impl ::evento_api::WorkflowFactory for #factory_ident {
             fn create(&self, id: uuid::Uuid, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
-                Box::new(#struct_name {
-                    __id: id,
-                    __operation_results: execution_results,
-                    __iteration_counter_map: ::std::collections::HashMap::new(),
-                })
+                Box::new(#struct_name::new(
+                    id,
+                    execution_results,
+                ))
             }
         }
     };
