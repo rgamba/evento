@@ -6,8 +6,10 @@ use evento_derive::workflow;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[workflow(DemoWorkflowContext)]
-pub struct DemoWorkflow;
+#[workflow]
+pub struct DemoWorkflow {
+    context: DemoWorkflowContext,
+}
 impl Workflow for DemoWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
         let context: DemoWorkflowContext = self.context();
@@ -56,8 +58,8 @@ pub struct SumOperationInput {
 fn it_works() {
     let wf = DemoWorkflow::new(
         Uuid::nil(),
-        DemoWorkflowContext { sum_a: 1, sum_b: 2 },
         vec![],
+        DemoWorkflowContext { sum_a: 1, sum_b: 2 },
     );
     let result = wf.run();
     match result {

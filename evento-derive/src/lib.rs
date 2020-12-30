@@ -10,9 +10,9 @@ use syn::{AttributeArgs, Fields};
 
 #[proc_macro_attribute]
 pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
-    let args = syn::parse_macro_input!(metadata as AttributeArgs);
-    let context_type = get_context_type(args).unwrap();
+    let _args = syn::parse_macro_input!(metadata as AttributeArgs);
     let item = syn::parse_macro_input!(input as syn::ItemStruct);
+    let context_type = get_context_type(&item);
     let struct_name = &item.ident;
     let mut fields = Vec::new();
     if let Fields::Named(ref f) = item.fields {
@@ -28,16 +28,14 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
             __id: ::uuid::Uuid,
             __operation_results: Vec<OperationResult>,
             __iteration_counter_map: ::std::sync::Mutex<::std::collections::HashMap<String, usize>>,
-            __context: #context_type,
         }
         impl #struct_name {
-            pub fn new(id: ::uuid::Uuid, context: #context_type, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
+            pub fn new(id: ::uuid::Uuid, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
             where #context_type: ::serde::Serialize + Clone
             {
                 Self {
                     __id: id,
                     __operation_results: operation_results,
-                    __context: context,
                     #( #fields_names, )*
                     __iteration_counter_map: ::std::sync::Mutex::new(::std::collections::HashMap::new()),
                 }
@@ -48,7 +46,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
                 })
             }
             fn context(&self) -> #context_type {
-                self.__context.clone()
+                self.context.clone()
             }
             fn increase_iteration_counter(&self, operation_name: &String) {
                 let mut guard = self.__iteration_counter_map.lock().unwrap();
@@ -95,8 +93,8 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
             fn create(&self, id: uuid::Uuid, context: ::serde_json::Value, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
                 Box::new(#struct_name::new(
                     id,
-                    #struct_name::convert_context(&context).unwrap(),
                     execution_results,
+                    #struct_name::convert_context(&context).unwrap(),
                 ))
             }
         }
@@ -120,14 +118,32 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     output.into()
 }
 
-fn get_context_type(args: AttributeArgs) -> Option<syn::Ident> {
-    for arg in args.iter() {
-        match arg {
-            syn::NestedMeta::Meta(meta) => {
-                return Option::Some(meta.name().clone());
+fn get_context_type<'a>(struct_item: &'a syn::ItemStruct) -> &'a syn::Type {
+    let mut result = Option::None;
+    if let Fields::Named(ref f) = struct_item.fields {
+        for field in &f.named {
+            let ident = field.ident.as_ref().unwrap();
+            if ident == "context" {
+                result = Some(&field.ty);
+            } else {
+                ident
+                    .span()
+                    .unstable()
+                    .error("This field is not allowed in workflow struct")
+                    .emit();
+                panic!("Workflow structure is invalid")
             }
-            _ => {}
         }
     }
-    Option::None
+    match result {
+        None => {
+            struct_item
+                .span()
+                .unstable()
+                .error("Workflow must have 'context' field")
+                .emit();
+            panic!("Workflow structure is invalid")
+        }
+        Some(r) => r,
+    }
 }
