@@ -6,10 +6,12 @@ extern crate quote;
 
 use proc_macro::TokenStream;
 use syn::spanned::Spanned;
-use syn::Fields;
+use syn::{AttributeArgs, Fields};
 
 #[proc_macro_attribute]
-pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
+pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
+    let args = syn::parse_macro_input!(metadata as AttributeArgs);
+    let context_type = get_context_type(args).unwrap();
     let item = syn::parse_macro_input!(input as syn::ItemStruct);
     let struct_name = &item.ident;
     let mut fields = Vec::new();
@@ -18,44 +20,69 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     }
     let fields2 = fields.clone();
     let fields_names: Vec<syn::Ident> = fields.iter().map(|f| f.ident.clone().unwrap()).collect();
+    let workflow_name = format!("{}", struct_name);
     // Recreate the workflow struct and construct the `new` method
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
             __id: ::uuid::Uuid,
             __operation_results: Vec<OperationResult>,
-            __iteration_counter_map: ::std::collections::HashMap<String, ::core::sync::atomic::AtomicUsize>,
+            __iteration_counter_map: ::std::sync::Mutex<::std::collections::HashMap<String, usize>>,
+            __context: #context_type,
         }
         impl #struct_name {
-            fn new(id: ::uuid::Uuid, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self {
+            pub fn new(id: ::uuid::Uuid, context: #context_type, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
+            where #context_type: ::serde::Serialize + Clone
+            {
                 Self {
                     __id: id,
                     __operation_results: operation_results,
+                    __context: context,
                     #( #fields_names, )*
-                    __iteration_counter_map: ::std::collections::HashMap::new(),
+                    __iteration_counter_map: ::std::sync::Mutex::new(::std::collections::HashMap::new()),
                 }
             }
-        }
-    };
-    // Create the WorkflowMetadata impl
-    let workflow_name = format!("{}", struct_name);
-    let metadata_def = quote! {
-        impl ::evento_api::WorkflowMetadata for #struct_name {
-            fn id(&self) -> ::uuid::Uuid {
+            fn convert_context(context: &serde_json::Value) -> Result<#context_type> {
+                ::serde_json::from_value(context.clone()).map_err(|e| {
+                    ::anyhow::format_err!("Unable to deserialize workflow context: {:?}", e)
+                })
+            }
+            fn context(&self) -> #context_type {
+                self.__context.clone()
+            }
+            fn increase_iteration_counter(&self, operation_name: &String) {
+                let mut guard = self.__iteration_counter_map.lock().unwrap();
+                let count = {
+                    if let Some(c) = guard.get(operation_name.as_str()) {
+                        c.clone()
+                    } else {
+                        0
+                    }
+                };
+                guard.insert(operation_name.clone(), count + 1);
+            }
+
+            pub fn id(&self) -> ::uuid::Uuid {
                 self.__id.clone()
             }
-            fn name(&self) -> String {
+            pub fn name(&self) -> String {
                 String::from(#workflow_name)
             }
-            fn execution_results(&self) -> Vec<::evento_api::OperationResult> {
-                self.__operation_results.clone()
+            fn iteration_counter(&self, operation_name: &String) -> usize {
+                let mut guard = self.__iteration_counter_map.lock().unwrap();
+                guard
+                    .get(operation_name.as_str())
+                    .map_or(0, |v| v.clone())
             }
-            fn iteration_counter_map(&mut self) -> &mut ::std::collections::HashMap<String, ::core::sync::atomic::AtomicUsize> {
-                &mut self.__iteration_counter_map
-            }
-            fn context<T: ::serde::de::DeserializeOwned>(&self) -> ::anyhow::Result<T> {
-                ::serde_json::from_value(self.__context.clone())
-                    .map_err(|e| ::anyhow::format_err!("Unable to deserialize workflow context: {:?}", e))
+            fn find_execution_result(
+                &self,
+                operation_name: String,
+                iteration: usize,
+            ) -> Option<OperationResult> {
+                self.__operation_results
+                    .clone()
+                    .into_iter()
+                    .find(|r| r.operation_name == operation_name && r.iteration == iteration)
             }
         }
     };
@@ -65,9 +92,10 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     let factory_def = quote! {
         pub struct #factory_ident;
         impl ::evento_api::WorkflowFactory for #factory_ident {
-            fn create(&self, id: uuid::Uuid, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
+            fn create(&self, id: uuid::Uuid, context: ::serde_json::Value, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
                 Box::new(#struct_name::new(
                     id,
+                    #struct_name::convert_context(&context).unwrap(),
                     execution_results,
                 ))
             }
@@ -85,10 +113,21 @@ pub fn workflow(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     };
     let output = quote! {
         #workflow_def
-        #metadata_def
         #factory_def
         #workflow_export
     };
     println!(">>>> OUTPUT: {}", output.to_string());
     output.into()
+}
+
+fn get_context_type(args: AttributeArgs) -> Option<syn::Ident> {
+    for arg in args.iter() {
+        match arg {
+            syn::NestedMeta::Meta(meta) => {
+                return Option::Some(meta.name().clone());
+            }
+            _ => {}
+        }
+    }
+    Option::None
 }

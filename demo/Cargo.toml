@@ -8,6 +8,9 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
+anyhow = "1.0"
 evento-api = { path = "../evento-api" }
 evento-derive = { path = "../evento-derive" }
 uuid = { version = "0.8", features = ["serde", "v4"] }
+serde = {version = "1.0.118", features = ["derive"]}
+serde_json = "1.0"
