@@ -59,7 +59,6 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
                 };
                 guard.insert(operation_name.clone(), count + 1);
             }
-
             pub fn id(&self) -> ::uuid::Uuid {
                 self.__id.clone()
             }
@@ -118,7 +117,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     output.into()
 }
 
-fn get_context_type<'a>(struct_item: &'a syn::ItemStruct) -> &'a syn::Type {
+fn get_context_type(struct_item: &syn::ItemStruct) -> &syn::Type {
     let mut result = Option::None;
     if let Fields::Named(ref f) = struct_item.fields {
         for field in &f.named {

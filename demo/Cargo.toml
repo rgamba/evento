@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0"
+chrono = { version = "0.4.11", default-features = false, features = ["clock", "serde"] }
 evento-api = { path = "../evento-api" }
 evento-derive = { path = "../evento-derive" }
 uuid = { version = "0.8", features = ["serde", "v4"] }
