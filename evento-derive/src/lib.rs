@@ -6,7 +6,7 @@ extern crate quote;
 
 use proc_macro::TokenStream;
 use syn::spanned::Spanned;
-use syn::{AttributeArgs, Fields};
+use syn::{AttributeArgs, Fields, Token};
 
 #[proc_macro_attribute]
 pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {

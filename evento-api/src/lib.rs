@@ -86,16 +86,14 @@ pub struct ExternalOperationInput {
 }
 
 pub trait Operation {
-    fn new() -> Self
-    where
-        Self: Sized;
     fn execute(
         &self,
         input: OperationInput,
         external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError>;
+    ) -> Result<serde_json::Value, WorkflowError>;
 
     fn name(&self) -> &str;
+
     fn validate_input(input: &OperationInput)
     where
         Self: Sized;
@@ -223,7 +221,7 @@ macro_rules! run_all {
 
 #[macro_export]
 macro_rules! wait_for_external {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr ) =>  {{
+    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr, $corr_id:expr ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
             $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::WaitForExternal((input, Some($timeout)))),
             $crate::RunResult::Result(r) => r
@@ -245,10 +243,64 @@ macro_rules! export_workflow {
     };
 }
 
+#[macro_export]
+macro_rules! operation_ok {
+    ($result:expr) => {
+        ::anyhow::Result::Ok(serde_json::to_value($result).unwrap())
+    };
+}
+
+#[macro_export]
+macro_rules! parse_input {
+    ($input:ident, $type:ident) => {
+        $input.value::<$type>().map_err(|err| {
+            ::anyhow::format_err!("Unable to cast input value to '{}'", stringify!($type))
+        })?;
+    };
+}
+
 pub mod tests {
     use super::*;
     use crate::{Operation, Workflow};
     use std::collections::HashMap;
+
+    pub struct MockOperation {
+        operation_name: String,
+        callback: Box<dyn Fn(OperationInput) -> Result<serde_json::Value, WorkflowError>>,
+    }
+
+    impl MockOperation {
+        pub fn new(
+            name: &str,
+            callback: impl Fn(OperationInput) -> Result<serde_json::Value, WorkflowError> + 'static,
+        ) -> Self {
+            Self {
+                operation_name: name.into(),
+                callback: Box::new(callback),
+            }
+        }
+    }
+
+    impl Operation for MockOperation {
+        fn execute(
+            &self,
+            input: OperationInput,
+            _: Option<ExternalOperationInput>,
+        ) -> Result<serde_json::Value, WorkflowError> {
+            (self.callback)(input)
+        }
+
+        fn name(&self) -> &str {
+            self.operation_name.as_str()
+        }
+
+        fn validate_input(input: &OperationInput)
+        where
+            Self: Sized,
+        {
+            unimplemented!()
+        }
+    }
 
     pub fn run_to_completion(
         factory: Box<dyn WorkflowFactory>,
@@ -296,7 +348,7 @@ pub mod tests {
                 .get(input.operation_name.as_str())
                 .unwrap();
             let mut retries: usize = 0;
-            loop {
+            let result = loop {
                 match operation.execute(input.clone(), None) {
                     Ok(result) => break Ok(result),
                     Err(e) => {
@@ -308,6 +360,15 @@ pub mod tests {
                         }
                     }
                 }
+            };
+            match result {
+                Ok(res) => Ok(OperationResult::new(
+                    serde_json::to_value(res).unwrap(),
+                    input.iteration,
+                    operation.name().into(),
+                )
+                .unwrap()),
+                Err(err) => Err(err),
             }
         }
     }

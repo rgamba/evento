@@ -1,8 +1,8 @@
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
 use evento_api::{
-    run, wait_for_external, ExternalOperationInput, Operation, OperationInput, OperationResult,
-    Workflow, WorkflowError, WorkflowStatus,
+    operation_ok, parse_input, run, wait_for_external, ExternalOperationInput, Operation,
+    OperationInput, OperationResult, Workflow, WorkflowError, WorkflowStatus,
 };
 use evento_derive::workflow;
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ impl Workflow for ProposalApprovalWorkflow {
         run!(self, NotifyApprovers<bool>(proposal.clone()));
         let mut approval_count = 0;
         while approval_count < self.required_approvals(&proposal) {
-            approval_count = match wait_for_external!(self, ProcessApproval<ProcessApprovalResult>(proposal.clone()), self.proposal_expiration(&proposal))
+            approval_count = match wait_for_external!(self, ProcessApproval<ProcessApprovalResult>(proposal.clone()), self.proposal_expiration(&proposal), proposal.id)
             {
                 ProcessApprovalResult::Ok(new_count) => new_count,
                 ProcessApprovalResult::Declined(reason) => {
@@ -80,32 +80,19 @@ pub struct ProposalInput {
 
 pub struct GenerateProposal;
 impl Operation for GenerateProposal {
-    fn new() -> Self
-    where
-        Self: Sized,
-    {
-        unimplemented!()
+    fn name(&self) -> &str {
+        "GenerateProposal"
     }
 
     fn execute(
         &self,
         input: OperationInput,
         external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError> {
-        let new_input = input.value::<ProposalInput>().unwrap();
-        Ok(OperationResult::new(
-            serde_json::to_value(Proposal {
-                operation_type: new_input.operation_type,
-            })
-            .unwrap(),
-            input.iteration,
-            self.name().into(),
-        )
-        .unwrap())
-    }
-
-    fn name(&self) -> &str {
-        "GenerateProposal"
+    ) -> Result<serde_json::Value, WorkflowError> {
+        let new_input = parse_input!(input, ProposalInput);
+        operation_ok!(Proposal {
+            operation_type: new_input.operation_type,
+        })
     }
 
     fn validate_input(input: &OperationInput)
@@ -118,10 +105,6 @@ impl Operation for GenerateProposal {
 
 pub struct NotifyApprovers {}
 impl Operation for NotifyApprovers {
-    fn new() -> Self {
-        Self {}
-    }
-
     fn name(&self) -> &str {
         "NotifyApprovers"
     }
@@ -130,13 +113,8 @@ impl Operation for NotifyApprovers {
         &self,
         input: OperationInput,
         _: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError> {
-        Ok(OperationResult::new(
-            serde_json::to_value(true).unwrap(),
-            input.iteration,
-            self.name().into(),
-        )
-        .unwrap())
+    ) -> Result<serde_json::Value, WorkflowError> {
+        operation_ok!(true)
     }
 
     fn validate_input(input: &OperationInput) {
@@ -146,28 +124,16 @@ impl Operation for NotifyApprovers {
 
 pub struct ProcessApproval;
 impl Operation for ProcessApproval {
-    fn new() -> Self
-    where
-        Self: Sized,
-    {
-        unimplemented!()
+    fn name(&self) -> &str {
+        "ProcessApproval"
     }
 
     fn execute(
         &self,
         input: OperationInput,
         external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError> {
-        Ok(OperationResult::new(
-            serde_json::to_value(ProcessApprovalResult::Ok(input.iteration + 1)).unwrap(),
-            input.iteration,
-            self.name().into(),
-        )
-        .unwrap())
-    }
-
-    fn name(&self) -> &str {
-        "ProcessApproval"
+    ) -> Result<serde_json::Value, WorkflowError> {
+        operation_ok!(ProcessApprovalResult::Ok(input.iteration + 1))
     }
 
     fn validate_input(input: &OperationInput)
@@ -187,14 +153,21 @@ pub enum ProcessApprovalResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evento_api::tests::run_to_completion;
+    use evento_api::tests::{run_to_completion, MockOperation};
 
     #[test]
     fn test_run() {
+        let gen_proposal = MockOperation::new("GenerateProposal", |input| {
+            operation_ok!(Proposal {
+                operation_type: OperationType::Burn,
+            })
+        });
+
         let mut operation_map: HashMap<String, Box<dyn Operation>> = HashMap::new();
-        operation_map.insert("GenerateProposal".into(), Box::new(GenerateProposal {}));
+        operation_map.insert("GenerateProposal".into(), Box::new(gen_proposal));
         operation_map.insert("NotifyApprovers".into(), Box::new(NotifyApprovers {}));
         operation_map.insert("ProcessApproval".into(), Box::new(ProcessApproval {}));
+
         let context = ProposalApprovalWorkflowContext {
             operation_type: OperationType::Mint,
             body: serde_json::Value::default(),
