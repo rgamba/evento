@@ -2,6 +2,10 @@
 //#[cfg(test)]
 //mod tests;
 
+mod engine;
+mod registry;
+mod state;
+
 use anyhow::{format_err, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
@@ -13,6 +17,17 @@ use uuid::Uuid;
 pub static CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub static RUSTC_VERSION: &str = env!("RUSTC_VERSION");
 
+/// Unique identifier for a workflow definition. Must be unique
+pub type WorkflowName = String;
+/// Internally generated workflow ID. Guaranteed to be unique across all workflows.
+pub type WorkflowId = Uuid;
+pub type WorkflowContext = serde_json::Value;
+pub type ExternalInputKey = Uuid;
+/// External identifier for a workflow. Must be unique only within the associated workflow name.
+pub type CorrelationId = String;
+pub type OperationName = String;
+pub type OperationIteration = usize;
+
 pub trait Workflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError>;
 }
@@ -20,8 +35,9 @@ pub trait Workflow {
 pub trait WorkflowFactory {
     fn create(
         &self,
-        id: Uuid,
-        context: serde_json::Value,
+        id: WorkflowId,
+        correlation_id: CorrelationId,
+        context: WorkflowContext,
         execution_results: Vec<OperationResult>,
     ) -> Box<dyn Workflow>;
 }
@@ -35,6 +51,13 @@ pub struct WorkflowDeclaration {
 pub trait WorkflowFactoryRegistrar {
     fn register_factory(&mut self, workflow_name: String, workflow: Box<dyn WorkflowFactory>);
     fn register_operation_factory(&mut self, operation: Arc<dyn Operation>);
+}
+
+pub struct WorkflowData {
+    id: WorkflowId,
+    correlation_id: CorrelationId,
+    status: WorkflowStatus,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
