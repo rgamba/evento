@@ -53,15 +53,19 @@ pub trait WorkflowFactoryRegistrar {
     fn register_operation_factory(&mut self, operation: Arc<dyn Operation>);
 }
 
+#[derive(Clone, Debug)]
 pub struct WorkflowData {
     id: WorkflowId,
+    name: String,
     correlation_id: CorrelationId,
     status: WorkflowStatus,
     created_at: DateTime<Utc>,
+    context: WorkflowContext,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum WorkflowStatus {
+    Created,
     /// Workflow completed successfully happy path.
     Completed,
     /// Workflow completed but exercised an error scenario.
@@ -77,19 +81,21 @@ pub enum WorkflowStatus {
     /// This typically means an infrastructure error raised by an operation not being
     /// able to complete successfully or the number of retries have reached max.
     Error(WorkflowError),
+    /// The workflow was manually cancelled.
+    Cancelled,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorkflowError {
     pub is_retriable: bool,
-    pub error: Error,
+    pub error: String,
 }
 
 impl From<anyhow::Error> for WorkflowError {
     fn from(err: anyhow::Error) -> Self {
         Self {
             is_retriable: false,
-            error: err,
+            error: err.to_string(),
         }
     }
 }
@@ -98,7 +104,7 @@ impl From<String> for WorkflowError {
     fn from(err: String) -> Self {
         Self {
             is_retriable: false,
-            error: format_err!(err),
+            error: err,
         }
     }
 }
@@ -156,7 +162,7 @@ pub struct OperationInput {
     /// This is an external id used to correlate the external notification to a particular
     /// external operation. This is an alternative to exposing (workflow_id, operation_name, iteration)
     /// to the external world. Only used for external operations.
-    pub correlation_id: Option<Uuid>,
+    pub correlation_id: Option<ExternalInputKey>,
     input: serde_json::Value,
 }
 
@@ -337,7 +343,12 @@ pub mod tests {
         };
 
         let res = loop {
-            let mut wf = factory.create(Uuid::nil(), context.clone(), results.clone());
+            let mut wf = factory.create(
+                Uuid::nil(),
+                String::from(""),
+                context.clone(),
+                results.clone(),
+            );
             match wf.run() {
                 Ok(WorkflowStatus::Completed) => break Ok(WorkflowStatus::Completed),
                 Ok(WorkflowStatus::RunNext(next_operations)) => {

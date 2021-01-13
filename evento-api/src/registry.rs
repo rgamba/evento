@@ -1,8 +1,8 @@
 use crate::{
-    ExternalOperationInput, Operation, OperationInput, OperationResult, Workflow, WorkflowError,
-    WorkflowFactory, WorkflowId, WorkflowName,
+    CorrelationId, ExternalOperationInput, Operation, OperationInput, OperationResult, Workflow,
+    WorkflowContext, WorkflowError, WorkflowFactory, WorkflowId, WorkflowName,
 };
-use anyhow::Result;
+use anyhow::{format_err, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -14,6 +14,8 @@ pub trait WorkflowRegistry {
         &self,
         workflow_name: WorkflowName,
         workflow_id: WorkflowId,
+        correlation_id: CorrelationId,
+        context: WorkflowContext,
         execution_results: Vec<OperationResult>,
     ) -> Result<Box<dyn Workflow>>;
 }
@@ -33,6 +35,8 @@ impl WorkflowRegistry for SimpleWorkflowRegistry {
         &self,
         workflow_name: WorkflowName,
         workflow_id: WorkflowId,
+        correlation_id: CorrelationId,
+        context: WorkflowContext,
         execution_results: Vec<OperationResult>,
     ) -> Result<Box<dyn Workflow>> {
         Ok(self
@@ -44,10 +48,7 @@ impl WorkflowRegistry for SimpleWorkflowRegistry {
                     workflow_name
                 )
             })?
-            .create(
-                workflow_id,
-                execution_results.iter().map(|r| r.result.clone()).collect(),
-            ))
+            .create(workflow_id, correlation_id, context, execution_results))
     }
 }
 
