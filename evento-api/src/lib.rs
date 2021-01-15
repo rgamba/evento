@@ -10,7 +10,6 @@ use anyhow::{format_err, Error, Result};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 

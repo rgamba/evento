@@ -6,7 +6,7 @@ extern crate quote;
 
 use proc_macro::TokenStream;
 use syn::spanned::Spanned;
-use syn::{AttributeArgs, Fields, Token};
+use syn::{AttributeArgs, Fields};
 
 #[proc_macro_attribute]
 pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
@@ -25,16 +25,18 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
-            __id: ::uuid::Uuid,
+            __id: ::evento_api::WorkflowId,
+            __correlation_id: ::evento_api::CorrelationId,
             __operation_results: Vec<OperationResult>,
             __iteration_counter_map: ::std::sync::Mutex<::std::collections::HashMap<String, usize>>,
         }
         impl #struct_name {
-            pub fn new(id: ::uuid::Uuid, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
+            pub fn new(id: ::evento_api::WorkflowId, correlation_id: ::evento_api::CorrelationId, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
             where #context_type: ::serde::Serialize + Clone
             {
                 Self {
                     __id: id,
+                    __correlation_id: correlation_id,
                     __operation_results: operation_results,
                     #( #fields_names, )*
                     __iteration_counter_map: ::std::sync::Mutex::new(::std::collections::HashMap::new()),
@@ -89,9 +91,10 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let factory_def = quote! {
         pub struct #factory_ident;
         impl ::evento_api::WorkflowFactory for #factory_ident {
-            fn create(&self, id: uuid::Uuid, context: ::serde_json::Value, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
+            fn create(&self, id: ::evento_api::WorkflowId, correlation_id: ::evento_api::CorrelationId, context: ::evento_api::WorkflowContext, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
                 Box::new(#struct_name::new(
                     id,
+                    correlation_id,
                     execution_results,
                     #struct_name::convert_context(&context).unwrap(),
                 ))

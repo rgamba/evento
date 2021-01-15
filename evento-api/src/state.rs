@@ -87,6 +87,16 @@ pub struct InMemoryStore {
     pub workflows: Mutex<Vec<WorkflowData>>,
 }
 
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self {
+            operation_results: Mutex::new(HashMap::new()),
+            queue: Mutex::new(Vec::new()),
+            workflows: Mutex::new(Vec::new()),
+        }
+    }
+}
+
 impl Store for InMemoryStore {
     fn create_workflow(
         &self,
@@ -163,6 +173,9 @@ impl Store for InMemoryStore {
         result: Result<OperationResult, WorkflowError>,
     ) -> Result<()> {
         let mut guard = self.operation_results.lock().unwrap();
+        if !guard.contains_key(&workflow_id) {
+            guard.insert(workflow_id, vec![]);
+        }
         let mut list = guard.get_mut(&workflow_id).unwrap();
         match result {
             Ok(res) => list.push((operation_name.clone(), res)),
@@ -196,7 +209,9 @@ impl Store for InMemoryStore {
         execution_data: OperationExecutionData,
         run_date: DateTime<Utc>,
     ) -> Result<()> {
-        unimplemented!()
+        let mut guard = self.queue.lock().unwrap();
+        guard.push((execution_data, run_date));
+        Ok(())
     }
 
     fn queue_all_operations(
@@ -204,5 +219,74 @@ impl Store for InMemoryStore {
         operations: Vec<(OperationExecutionData, DateTime<Utc>)>,
     ) -> Result<()> {
         unimplemented!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_inmemory_store() {
+        let wf_name = "test".to_string();
+        let wf_id = Uuid::new_v4();
+        let correlation_id = "correlationid".to_string();
+        let context = serde_json::Value::String("test".to_string());
+        let operation_name = "test_operation".to_string();
+        let store = InMemoryStore::new();
+        // Create workflow
+        store
+            .create_workflow(
+                wf_name.clone(),
+                wf_id,
+                correlation_id.clone(),
+                context.clone(),
+            )
+            .unwrap();
+        // Get workflow
+        match store.get_workflow(wf_id).unwrap() {
+            None => panic!("Unable to get workflow!"),
+            Some(wf) => {
+                assert_eq!(wf.id, wf_id);
+                assert_eq!(wf.name, wf_name);
+                assert_eq!(wf.context, context);
+                assert_eq!(wf.correlation_id, correlation_id);
+            }
+        }
+        // Store execution result
+        let result_content = "test_result".to_string();
+        let result_content_2 = "test_result2".to_string();
+        let operation_result =
+            OperationResult::new(result_content.clone(), 0, operation_name.clone()).unwrap();
+        let operation_result_2 =
+            OperationResult::new(result_content_2.clone(), 0, operation_name.clone()).unwrap();
+        store
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result.clone()))
+            .unwrap();
+        store
+            .store_execution_result(
+                wf_id,
+                operation_name.clone(),
+                Ok(operation_result_2.clone()),
+            )
+            .unwrap();
+        // Fetch all execution results
+        let results = store.get_operation_results(wf_id).unwrap();
+        assert_eq!(2, results.len());
+        // Queue operation
+        let execution_data = OperationExecutionData {
+            workflow_id: wf_id,
+            retry_count: None,
+            input: OperationInput::new(
+                wf_name.clone(),
+                operation_name.clone(),
+                0,
+                result_content.clone(),
+            )
+            .unwrap(),
+        };
+        store
+            .queue_operation(execution_data.clone(), Utc::now())
+            .unwrap();
     }
 }

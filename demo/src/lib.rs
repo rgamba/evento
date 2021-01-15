@@ -19,6 +19,7 @@ pub struct ProposalApprovalWorkflowContext {
 pub struct ProposalApprovalWorkflow {
     context: ProposalApprovalWorkflowContext,
 }
+
 impl Workflow for ProposalApprovalWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
         let proposal: Proposal = run!(self, GenerateProposal<Proposal>(ProposalInput{
