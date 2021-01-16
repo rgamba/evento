@@ -2,13 +2,11 @@ use crate::{
     CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
     WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 pub struct State {
     pub store: Arc<dyn Store>,
@@ -65,6 +63,13 @@ pub trait Store {
         run_date: DateTime<Utc>,
     ) -> Result<()>;
 
+    fn dequeue_operation(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
+    ) -> Result<OperationExecutionData>;
+
     /// Queue all operations in an atomic transaction where this will only succeed if all
     /// operations are queued successfully or else the operation will rollback.
     /// The queuing logic is the same as the `queue_operation` function.
@@ -83,11 +88,15 @@ pub struct OperationExecutionData {
 
 pub struct InMemoryStore {
     pub operation_results: Mutex<HashMap<WorkflowId, Vec<(OperationName, OperationResult)>>>,
-    pub queue: Mutex<Vec<(OperationExecutionData, DateTime<Utc>)>>, // (data, run_date)
+    pub queue: Mutex<Vec<(OperationExecutionData, DateTime<Utc>, &'static str)>>, // (data, run_date)
     pub workflows: Mutex<Vec<WorkflowData>>,
 }
 
 impl InMemoryStore {
+    const QUEUED: &'static str = "Q";
+    const RETRY: &'static str = "R";
+    const DEQUEUED: &'static str = "D";
+
     pub fn new() -> Self {
         Self {
             operation_results: Mutex::new(HashMap::new()),
@@ -118,7 +127,7 @@ impl Store for InMemoryStore {
     }
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>> {
-        let mut guard = self.workflows.lock().unwrap();
+        let guard = self.workflows.lock().unwrap();
         Ok(guard
             .iter()
             .find(|w| w.id == workflow_id)
@@ -139,31 +148,52 @@ impl Store for InMemoryStore {
     }
 
     fn fetch_operations(&self, current_now: DateTime<Utc>) -> Result<Vec<OperationExecutionData>> {
-        let guard = self.queue.lock().unwrap();
+        let mut guard = self.queue.lock().unwrap();
         Ok(guard
-            .iter()
-            .filter(|(data, run_date)| current_now.gt(run_date))
-            .map(|(data, _)| data.clone())
+            .iter_mut()
+            .filter(|(_, run_date, state)| {
+                (*state == Self::QUEUED || *state == Self::RETRY) && current_now.gt(run_date)
+            })
+            .map(|(data, _, state)| {
+                let copy = data.clone();
+                *state = Self::RETRY;
+                data.retry_count = Some(data.retry_count.unwrap_or(0) + 1);
+                copy
+            })
             .collect())
     }
 
     fn complete_external_operation(
         &self,
         external_key: ExternalInputKey,
-        external_input_payload: Value,
+        external_input_payload: serde_json::Value,
     ) -> Result<OperationExecutionData> {
-        let guard = self.queue.lock().unwrap();
-        match guard
-            .iter()
-            .find(|(data, _)| match data.input.correlation_id {
+        let mut guard = self.queue.lock().unwrap();
+        let data = guard
+            .iter_mut()
+            .find(|(data, _, _)| match data.input.external_key {
                 Some(id) => external_key == id,
                 None => false,
+            } && data.input.external_input.is_none())
+            .map(|(ref mut data, _, state)| {
+                *state = Self::DEQUEUED;
+                data.input.external_input = Some(external_input_payload.clone());
+                data.clone()
             })
-            .map(|(data, _)| data.clone())
-        {
-            None => bail!("Invalid external key provided"),
-            Some(data) => Ok(data),
-        }
+            .ok_or(format_err!(
+                "Unable to find operation with external key provided"
+            ))?;
+        //TODO: somehow verify that the externak unput payload is correct and statically type it.
+        self.store_execution_result(
+            data.workflow_id,
+            data.input.operation_name.clone(),
+            Ok(OperationResult::new_from_value(
+                external_input_payload,
+                data.input.iteration,
+                data.input.operation_name.clone(),
+            )),
+        )?;
+        Ok(data)
     }
 
     fn store_execution_result(
@@ -176,7 +206,7 @@ impl Store for InMemoryStore {
         if !guard.contains_key(&workflow_id) {
             guard.insert(workflow_id, vec![]);
         }
-        let mut list = guard.get_mut(&workflow_id).unwrap();
+        let list = guard.get_mut(&workflow_id).unwrap();
         match result {
             Ok(res) => list.push((operation_name.clone(), res)),
             Err(_) => (),
@@ -185,11 +215,25 @@ impl Store for InMemoryStore {
     }
 
     fn complete_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
-        unimplemented!()
+        let mut guard = self.workflows.lock().unwrap();
+        match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+            Some(wf) => {
+                wf.status = WorkflowStatus::Completed;
+                Ok(())
+            }
+            None => bail!("Unable to find workflow with id: {}", workflow_id),
+        }
     }
 
     fn complete_workflow_with_error(&self, workflow_id: WorkflowId, error: String) -> Result<()> {
-        unimplemented!()
+        let mut guard = self.workflows.lock().unwrap();
+        match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+            Some(wf) => {
+                wf.status = WorkflowStatus::CompletedWithError(error.into());
+                Ok(())
+            }
+            None => bail!("Unable to find workflow with id: {}", workflow_id),
+        }
     }
 
     fn cancel_workflow(&self, workflow_id: WorkflowId, reason: String) -> Result<()> {
@@ -210,7 +254,7 @@ impl Store for InMemoryStore {
         run_date: DateTime<Utc>,
     ) -> Result<()> {
         let mut guard = self.queue.lock().unwrap();
-        guard.push((execution_data, run_date));
+        guard.push((execution_data, run_date, Self::QUEUED));
         Ok(())
     }
 
@@ -218,12 +262,38 @@ impl Store for InMemoryStore {
         &self,
         operations: Vec<(OperationExecutionData, DateTime<Utc>)>,
     ) -> Result<()> {
-        unimplemented!()
+        for (operation, run_at) in operations.into_iter() {
+            self.queue_operation(operation, run_at)?;
+        }
+        Ok(())
+    }
+
+    fn dequeue_operation(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
+    ) -> Result<OperationExecutionData> {
+        let mut guard = self.queue.lock().unwrap();
+        let index = guard
+            .iter_mut()
+            .position(|(data, _, _)| {
+                data.workflow_id == workflow_id
+                    && data.input.operation_name == operation_name
+                    && data.input.iteration == iteration
+            })
+            .ok_or(format_err!("Unable to find operation"))?;
+        let (data, _, _) = guard.remove(index);
+        Ok(data)
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use chrono::Duration;
+    use uuid::Uuid;
+
     use super::*;
 
     #[test]
@@ -244,15 +314,16 @@ mod tests {
             )
             .unwrap();
         // Get workflow
-        match store.get_workflow(wf_id).unwrap() {
-            None => panic!("Unable to get workflow!"),
-            Some(wf) => {
-                assert_eq!(wf.id, wf_id);
-                assert_eq!(wf.name, wf_name);
-                assert_eq!(wf.context, context);
-                assert_eq!(wf.correlation_id, correlation_id);
-            }
-        }
+        let wf = store.get_workflow(wf_id).unwrap().unwrap();
+        assert_eq!(wf.id, wf_id);
+        assert_eq!(wf.name, wf_name);
+        assert_eq!(wf.context, context);
+        assert_eq!(wf.correlation_id, correlation_id);
+        assert!(matches!(wf.status, WorkflowStatus::Created));
+        // Mark as completed
+        store.complete_workflow(wf_id).unwrap();
+        let wf = store.get_workflow(wf_id).unwrap().unwrap();
+        assert!(matches!(wf.status, WorkflowStatus::Completed));
         // Store execution result
         let result_content = "test_result".to_string();
         let result_content_2 = "test_result2".to_string();
@@ -285,8 +356,73 @@ mod tests {
             )
             .unwrap(),
         };
+        // Try fetch an element with a run_date greater than current time
+        let now = Utc::now();
         store
-            .queue_operation(execution_data.clone(), Utc::now())
+            .queue_operation(execution_data.clone(), now.clone())
             .unwrap();
+        let results = store
+            .fetch_operations(now.checked_sub_signed(Duration::seconds(5)).unwrap())
+            .unwrap();
+        assert!(results.is_empty());
+        // Try fetching an element that is meant to be fetched
+        let results = store
+            .fetch_operations(now.checked_add_signed(Duration::seconds(5)).unwrap())
+            .unwrap();
+        assert_eq!(1, results.len());
+        assert_eq!(0, results.get(0).unwrap().retry_count.unwrap_or_default());
+        // Try fetching again without dequeuing the element should return the same element with a retry count incremented
+        let results = store
+            .fetch_operations(now.checked_add_signed(Duration::seconds(5)).unwrap())
+            .unwrap();
+        assert_eq!(1, results.len());
+        assert_eq!(1, results.get(0).unwrap().retry_count.unwrap_or_default());
+        // Dequeue the element and check that it is actually removed from the queue.
+        store
+            .dequeue_operation(wf_id, operation_name.clone(), 0)
+            .unwrap();
+        let results = store
+            .fetch_operations(now.checked_add_signed(Duration::seconds(5)).unwrap())
+            .unwrap();
+        assert_eq!(0, results.len());
+        // Queue wait operation
+        // Queue operation
+        let external_key = Uuid::new_v4();
+        let execution_data = OperationExecutionData {
+            workflow_id: wf_id,
+            retry_count: None,
+            input: OperationInput::new_external(
+                wf_name.clone(),
+                operation_name.clone(),
+                0,
+                result_content.clone(),
+                external_key,
+            )
+            .unwrap(),
+        };
+        store
+            .queue_operation(
+                execution_data,
+                now.checked_add_signed(Duration::seconds(10)).unwrap(),
+            )
+            .unwrap();
+        let ext_payload_input = serde_json::to_value(result_content_2.clone()).unwrap();
+        let operation = store
+            .complete_external_operation(external_key, ext_payload_input.clone())
+            .unwrap();
+        assert!(matches!(
+            operation.input.external_input,
+            Some(x) if x == ext_payload_input
+        ));
+        // Trying to fetch that operation again should not return anything
+        let results = store
+            .fetch_operations(now.checked_add_signed(Duration::seconds(15)).unwrap())
+            .unwrap();
+        assert!(results.is_empty());
+        // Check execution results to verify its in there
+        let results = store.get_operation_results(wf_id).unwrap();
+        assert_eq!(3, results.len());
+        let last = results.last().unwrap();
+        assert_eq!(last.result::<String>().unwrap(), ext_payload_input.clone());
     }
 }

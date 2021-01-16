@@ -1,25 +1,12 @@
 use crate::{
-    CorrelationId, ExternalOperationInput, Operation, OperationInput, OperationResult, Workflow,
-    WorkflowContext, WorkflowError, WorkflowFactory, WorkflowId, WorkflowName,
+    CorrelationId, Operation, OperationExecutor, OperationInput, OperationResult, Workflow,
+    WorkflowContext, WorkflowError, WorkflowFactory, WorkflowId, WorkflowName, WorkflowRegistry,
 };
 use anyhow::{format_err, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
-use uuid::Uuid;
 
-/// Workflow registry is the bag of factories that is solely responsible for recreating
-/// a workflow instance given the workflow name and details.
-pub trait WorkflowRegistry {
-    fn create_workflow(
-        &self,
-        workflow_name: WorkflowName,
-        workflow_id: WorkflowId,
-        correlation_id: CorrelationId,
-        context: WorkflowContext,
-        execution_results: Vec<OperationResult>,
-    ) -> Result<Box<dyn Workflow>>;
-}
-
+/// Simple registry that maps workflows based on simple string name
 pub struct SimpleWorkflowRegistry {
     factories: HashMap<String, Arc<dyn WorkflowFactory>>,
 }
@@ -52,16 +39,8 @@ impl WorkflowRegistry for SimpleWorkflowRegistry {
     }
 }
 
-/// OperationExecutor is the operation that routes and executes an operation instruction
-/// in the appropriate `Operation` instance for it.
-pub trait OperationExecutor {
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError>;
-}
-
+/// Simple operation executor.
+/// This executor works like an operation router with no retries.
 pub struct SimpleOperationExecutor {
     pub operation_map: HashMap<String, Box<dyn Operation>>,
 }
@@ -73,16 +52,12 @@ impl SimpleOperationExecutor {
 }
 
 impl OperationExecutor for SimpleOperationExecutor {
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError> {
+    fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
         let operation = self
             .operation_map
             .get(input.operation_name.as_str())
             .unwrap();
-        match operation.execute(input.clone(), external_input) {
+        match operation.execute(input.clone()) {
             Ok(res) => Ok(OperationResult::new(
                 serde_json::to_value(res).unwrap(),
                 input.iteration,
@@ -94,6 +69,8 @@ impl OperationExecutor for SimpleOperationExecutor {
     }
 }
 
+/// Simple operation executor that routes operations and performs
+/// immediate retries in case of errors.
 pub struct RetryOperationExecutor {
     pub max_retries: usize,
     simple_operation_executor: SimpleOperationExecutor,
@@ -109,17 +86,10 @@ impl RetryOperationExecutor {
 }
 
 impl OperationExecutor for RetryOperationExecutor {
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<OperationResult, WorkflowError> {
+    fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
         let mut retries: usize = 0;
         loop {
-            match self
-                .simple_operation_executor
-                .execute(input.clone(), external_input.clone())
-            {
+            match self.simple_operation_executor.execute(input.clone()) {
                 Ok(result) => break Ok(result),
                 Err(e) => {
                     if e.is_retriable && retries < self.max_retries {

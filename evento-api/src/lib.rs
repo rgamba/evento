@@ -2,11 +2,12 @@
 //#[cfg(test)]
 //mod tests;
 
-mod engine;
+pub mod api;
 mod registry;
+mod runners;
 mod state;
 
-use anyhow::{format_err, Error, Result};
+use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -108,17 +109,8 @@ impl From<String> for WorkflowError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ExternalOperationInput {
-    pub payload: serde_json::Value,
-}
-
 pub trait Operation {
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<serde_json::Value, WorkflowError>;
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError>;
 
     fn name(&self) -> &str;
 
@@ -148,6 +140,19 @@ impl OperationResult {
         })
     }
 
+    pub fn new_from_value(
+        result: serde_json::Value,
+        iteration: usize,
+        operation_name: String,
+    ) -> Self {
+        Self {
+            result,
+            iteration,
+            operation_name,
+            created_at: Utc::now(),
+        }
+    }
+
     pub fn result<T: DeserializeOwned>(&self) -> Result<T> {
         serde_json::from_value(self.result.clone()).map_err(|err| format_err!("{:?}", err))
     }
@@ -161,8 +166,11 @@ pub struct OperationInput {
     /// This is an external id used to correlate the external notification to a particular
     /// external operation. This is an alternative to exposing (workflow_id, operation_name, iteration)
     /// to the external world. Only used for external operations.
-    pub correlation_id: Option<ExternalInputKey>,
+    pub external_key: Option<ExternalInputKey>,
     input: serde_json::Value,
+    /// This value will only be present for external operation inputs after input has been provided from
+    /// the external source.
+    external_input: Option<serde_json::Value>,
 }
 
 impl OperationInput {
@@ -177,7 +185,25 @@ impl OperationInput {
             operation_name,
             input: serde_json::to_value(value)?,
             iteration,
-            correlation_id: None,
+            external_key: None,
+            external_input: None,
+        })
+    }
+
+    pub fn new_external<T: Serialize>(
+        workflow_name: String,
+        operation_name: String,
+        iteration: usize,
+        input: T,
+        external_key: ExternalInputKey,
+    ) -> Result<Self> {
+        Ok(Self {
+            workflow_name,
+            operation_name,
+            input: serde_json::to_value(input)?,
+            iteration,
+            external_key: Some(external_key),
+            external_input: None,
         })
     }
 
@@ -186,6 +212,34 @@ impl OperationInput {
     }
 }
 
+/// Operation executor is the component that will typically maintain a statefull set of
+/// `Operation` instances and will delegate execution to the appropriate one.
+/// It will also take care of the retry strategy.
+pub trait OperationExecutor {
+    fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
+}
+
+/// Workflow runner is the component that abstracts the workflow execution strategy.
+/// It will typically hold a map of workflow factories and will keep a workflow factory registry
+/// in order to be able to dynamically create and execute workflows.
+pub trait WorkflowRunner {
+    fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError>;
+}
+
+/// Workflow registry is the bag of factories that is solely responsible for recreating
+/// a workflow instance given the workflow name and details.
+pub trait WorkflowRegistry {
+    fn create_workflow(
+        &self,
+        workflow_name: WorkflowName,
+        workflow_id: WorkflowId,
+        correlation_id: CorrelationId,
+        context: WorkflowContext,
+        execution_results: Vec<OperationResult>,
+    ) -> Result<Box<dyn Workflow>>;
+}
+
+/// For usage within the run macros only.
 pub enum RunResult<T> {
     Return(OperationInput),
     Result(T),
@@ -289,7 +343,7 @@ macro_rules! parse_input {
 
 pub mod tests {
     use super::*;
-    use crate::{Operation, Workflow};
+    use crate::Operation;
     use std::collections::HashMap;
 
     pub struct MockOperation {
@@ -310,11 +364,7 @@ pub mod tests {
     }
 
     impl Operation for MockOperation {
-        fn execute(
-            &self,
-            input: OperationInput,
-            _: Option<ExternalOperationInput>,
-        ) -> Result<serde_json::Value, WorkflowError> {
+        fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
             (self.callback)(input)
         }
 
@@ -330,59 +380,84 @@ pub mod tests {
         }
     }
 
-    pub fn run_to_completion(
-        factory: Box<dyn WorkflowFactory>,
-        context: ::serde_json::Value,
-        operation_map: HashMap<String, Box<dyn Operation>>,
-    ) -> Result<(WorkflowStatus, Vec<OperationResult>), WorkflowError> {
-        let mut results = Vec::new();
-        let executor = OperationExecutor {
-            operation_map,
-            max_retries: 10,
-        };
+    /// Workflow runner that allows immediate execution of the workflow and the associated operations
+    /// synchronously in the same task.
+    struct InlineWorkflowRunner {
+        operation_executor: Arc<dyn OperationExecutor>,
+        workflow_factory_map: HashMap<String, Box<dyn WorkflowFactory>>,
+    }
 
-        let res = loop {
-            let mut wf = factory.create(
-                Uuid::nil(),
-                String::from(""),
-                context.clone(),
-                results.clone(),
-            );
-            match wf.run() {
-                Ok(WorkflowStatus::Completed) => break Ok(WorkflowStatus::Completed),
-                Ok(WorkflowStatus::RunNext(next_operations)) => {
-                    for op in next_operations {
-                        results.push(executor.execute(op)?);
-                    }
-                }
-                Ok(WorkflowStatus::WaitForExternal((input, timeout))) => {
-                    //TODO: figure out how to pass the external input.
-                    results.push(executor.execute(input)?);
-                }
-                Ok(other) => break Ok(other),
-                Err(e) => break Err(e),
+    impl WorkflowRunner for InlineWorkflowRunner {
+        fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError> {
+            match self.run_and_return_results(workflow_data) {
+                Ok((result, _)) => Ok(result),
+                Err(e) => Err(e),
             }
-        };
-        match res {
-            Ok(s) => Ok((s, results)),
-            Err(e) => Err(e),
         }
     }
 
-    pub struct OperationExecutor {
+    impl InlineWorkflowRunner {
+        pub fn new(
+            operation_executor: Arc<dyn OperationExecutor>,
+            workflow_factory_map: HashMap<String, Box<dyn WorkflowFactory>>,
+        ) -> Self {
+            Self {
+                operation_executor,
+                workflow_factory_map,
+            }
+        }
+
+        pub fn run_and_return_results(
+            &self,
+            workflow_data: WorkflowData,
+        ) -> Result<(WorkflowStatus, Vec<OperationResult>), WorkflowError> {
+            let mut results = Vec::new();
+            let factory = self.workflow_factory_map.get(&workflow_data.name).unwrap();
+            let res = loop {
+                let mut wf = factory.create(
+                    workflow_data.id,
+                    workflow_data.correlation_id.clone(),
+                    workflow_data.context.clone(),
+                    results.clone(),
+                );
+                match wf.run() {
+                    Ok(WorkflowStatus::Completed) => break Ok(WorkflowStatus::Completed),
+                    Ok(WorkflowStatus::RunNext(next_operations)) => {
+                        for op in next_operations {
+                            results.push(self.operation_executor.execute(op)?);
+                        }
+                    }
+                    Ok(WorkflowStatus::WaitForExternal((input, timeout))) => {
+                        //TODO: figure out how to pass the external input.
+                        results.push(self.operation_executor.execute(input)?);
+                    }
+                    Ok(other) => break Ok(other),
+                    Err(e) => break Err(e),
+                }
+            };
+            match res {
+                Ok(s) => Ok((s, results)),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Operator executor that executes the operations immediately on the same thread and with
+    /// an immediate retry strategy.
+    pub struct InlineOperationExecutor {
         pub operation_map: HashMap<String, Box<dyn Operation>>,
         pub max_retries: usize,
     }
 
-    impl OperationExecutor {
-        pub fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
+    impl OperationExecutor for InlineOperationExecutor {
+        fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
             let operation = self
                 .operation_map
                 .get(input.operation_name.as_str())
                 .unwrap();
             let mut retries: usize = 0;
             let result = loop {
-                match operation.execute(input.clone(), None) {
+                match operation.execute(input.clone()) {
                     Ok(result) => break Ok(result),
                     Err(e) => {
                         if e.is_retriable && retries < self.max_retries {
@@ -404,5 +479,28 @@ pub mod tests {
                 Err(err) => Err(err),
             }
         }
+    }
+
+    /// Utility function to easily run workflows.
+    pub fn run_to_completion(
+        factory: Box<dyn WorkflowFactory>,
+        context: ::serde_json::Value,
+        operation_map: HashMap<String, Box<dyn Operation>>,
+    ) -> Result<(WorkflowStatus, Vec<OperationResult>), WorkflowError> {
+        let executor = InlineOperationExecutor {
+            operation_map,
+            max_retries: 10,
+        };
+        let mut factories = HashMap::new();
+        factories.insert("test".to_string(), factory);
+        let runner = InlineWorkflowRunner::new(Arc::new(executor), factories);
+        runner.run_and_return_results(WorkflowData {
+            id: Uuid::new_v4(),
+            name: "test".to_string(),
+            created_at: Utc::now(),
+            context: context,
+            correlation_id: "test".to_string(),
+            status: WorkflowStatus::Created,
+        })
     }
 }

@@ -1,8 +1,8 @@
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
 use evento_api::{
-    operation_ok, parse_input, run, wait_for_external, ExternalOperationInput, Operation,
-    OperationInput, OperationResult, Workflow, WorkflowError, WorkflowStatus,
+    operation_ok, parse_input, run, wait_for_external, Operation, OperationInput, OperationResult,
+    Workflow, WorkflowError, WorkflowStatus,
 };
 use evento_derive::workflow;
 use serde::{Deserialize, Serialize};
@@ -85,11 +85,7 @@ impl Operation for GenerateProposal {
         "GenerateProposal"
     }
 
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         let new_input = parse_input!(input, ProposalInput);
         operation_ok!(Proposal {
             operation_type: new_input.operation_type,
@@ -110,11 +106,7 @@ impl Operation for NotifyApprovers {
         "NotifyApprovers"
     }
 
-    fn execute(
-        &self,
-        input: OperationInput,
-        _: Option<ExternalOperationInput>,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         operation_ok!(true)
     }
 
@@ -129,11 +121,7 @@ impl Operation for ProcessApproval {
         "ProcessApproval"
     }
 
-    fn execute(
-        &self,
-        input: OperationInput,
-        external_input: Option<ExternalOperationInput>,
-    ) -> Result<serde_json::Value, WorkflowError> {
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         operation_ok!(ProcessApprovalResult::Ok(input.iteration + 1))
     }
 
@@ -158,10 +146,11 @@ mod tests {
 
     #[test]
     fn test_run() {
-        let gen_proposal = MockOperation::new("GenerateProposal", |input| {
-            operation_ok!(Proposal {
+        let gen_proposal = MockOperation::new("GenerateProposal", |_| {
+            /*operation_ok!(Proposal {
                 operation_type: OperationType::Burn,
-            })
+            });*/
+            Err("error!".to_string().into())
         });
 
         let mut operation_map: HashMap<String, Box<dyn Operation>> = HashMap::new();
@@ -182,7 +171,7 @@ mod tests {
                 println!("OK");
             }
             Err(err) => {
-                panic!("Failed to complete")
+                panic!("Failed to complete: {:?}", err)
             }
         }
     }
