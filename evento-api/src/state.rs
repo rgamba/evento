@@ -1,6 +1,7 @@
 use crate::{
     CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
-    WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
+    WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowRunner,
+    WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
@@ -8,11 +9,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
 pub struct State {
     pub store: Arc<dyn Store>,
+    //pub workflow_runner: Arc<dyn WorkflowRunner>,
 }
 
-pub trait Store {
+pub trait Store: Send + Sync {
     fn create_workflow(
         &self,
         workflow_name: WorkflowName,
@@ -289,12 +292,17 @@ impl Store for InMemoryStore {
 }
 
 #[cfg(test)]
-mod tests {
-
+pub mod tests {
     use chrono::Duration;
     use uuid::Uuid;
 
     use super::*;
+
+    pub fn create_test_state() -> State {
+        State {
+            store: Arc::new(InMemoryStore::new()),
+        }
+    }
 
     #[test]
     fn test_inmemory_store() {

@@ -9,6 +9,8 @@ mod state;
 
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
+#[cfg(test)]
+use mockall::automock;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::Arc;
@@ -28,11 +30,13 @@ pub type CorrelationId = String;
 pub type OperationName = String;
 pub type OperationIteration = usize;
 
+#[cfg_attr(test, automock)]
 pub trait Workflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError>;
 }
 
-pub trait WorkflowFactory {
+#[cfg_attr(test, automock)]
+pub trait WorkflowFactory: Send + Sync {
     fn create(
         &self,
         id: WorkflowId,
@@ -55,12 +59,12 @@ pub trait WorkflowFactoryRegistrar {
 
 #[derive(Clone, Debug)]
 pub struct WorkflowData {
-    id: WorkflowId,
-    name: String,
-    correlation_id: CorrelationId,
-    status: WorkflowStatus,
-    created_at: DateTime<Utc>,
-    context: WorkflowContext,
+    pub id: WorkflowId,
+    pub name: String,
+    pub correlation_id: CorrelationId,
+    pub status: WorkflowStatus,
+    pub created_at: DateTime<Utc>,
+    pub context: WorkflowContext,
 }
 
 #[derive(Clone, Debug)]
@@ -109,7 +113,7 @@ impl From<String> for WorkflowError {
     }
 }
 
-pub trait Operation {
+pub trait Operation: Send + Sync {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError>;
 
     fn name(&self) -> &str;
@@ -215,20 +219,20 @@ impl OperationInput {
 /// Operation executor is the component that will typically maintain a statefull set of
 /// `Operation` instances and will delegate execution to the appropriate one.
 /// It will also take care of the retry strategy.
-pub trait OperationExecutor {
+pub trait OperationExecutor: Send + Sync {
     fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
 }
 
 /// Workflow runner is the component that abstracts the workflow execution strategy.
 /// It will typically hold a map of workflow factories and will keep a workflow factory registry
 /// in order to be able to dynamically create and execute workflows.
-pub trait WorkflowRunner {
+pub trait WorkflowRunner: Send + Sync {
     fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError>;
 }
 
 /// Workflow registry is the bag of factories that is solely responsible for recreating
 /// a workflow instance given the workflow name and details.
-pub trait WorkflowRegistry {
+pub trait WorkflowRegistry: Send + Sync {
     fn create_workflow(
         &self,
         workflow_name: WorkflowName,
@@ -348,13 +352,17 @@ pub mod tests {
 
     pub struct MockOperation {
         operation_name: String,
-        callback: Box<dyn Fn(OperationInput) -> Result<serde_json::Value, WorkflowError>>,
+        callback:
+            Box<dyn Fn(OperationInput) -> Result<serde_json::Value, WorkflowError> + Send + Sync>,
     }
 
     impl MockOperation {
         pub fn new(
             name: &str,
-            callback: impl Fn(OperationInput) -> Result<serde_json::Value, WorkflowError> + 'static,
+            callback: impl Fn(OperationInput) -> Result<serde_json::Value, WorkflowError>
+                + 'static
+                + Send
+                + Sync,
         ) -> Self {
             Self {
                 operation_name: name.into(),
@@ -382,7 +390,7 @@ pub mod tests {
 
     /// Workflow runner that allows immediate execution of the workflow and the associated operations
     /// synchronously in the same task.
-    struct InlineWorkflowRunner {
+    pub struct InlineWorkflowRunner {
         operation_executor: Arc<dyn OperationExecutor>,
         workflow_factory_map: HashMap<String, Box<dyn WorkflowFactory>>,
     }

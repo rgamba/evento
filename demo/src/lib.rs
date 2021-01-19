@@ -1,4 +1,4 @@
-use anyhow::{format_err, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use evento_api::{
     operation_ok, parse_input, run, wait_for_external, Operation, OperationInput, OperationResult,
@@ -6,8 +6,6 @@ use evento_api::{
 };
 use evento_derive::workflow;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use uuid::Uuid;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct ProposalApprovalWorkflowContext {
@@ -141,16 +139,17 @@ pub enum ProcessApprovalResult {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use evento_api::tests::{run_to_completion, MockOperation};
 
     #[test]
     fn test_run() {
         let gen_proposal = MockOperation::new("GenerateProposal", |_| {
-            /*operation_ok!(Proposal {
+            operation_ok!(Proposal {
                 operation_type: OperationType::Burn,
-            });*/
-            Err("error!".to_string().into())
+            })
         });
 
         let mut operation_map: HashMap<String, Box<dyn Operation>> = HashMap::new();
