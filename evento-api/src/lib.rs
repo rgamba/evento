@@ -1,8 +1,5 @@
-//mod operations;
-//#[cfg(test)]
-//mod tests;
-
 pub mod api;
+mod poller;
 mod registry;
 mod runners;
 mod state;
@@ -67,8 +64,10 @@ pub struct WorkflowData {
     pub context: WorkflowContext,
 }
 
+/// Represents the status of a Workflow at a given point in time of the execution.
 #[derive(Clone, Debug)]
 pub enum WorkflowStatus {
+    /// Workflow has just been created and has not been executed for the first time yet.
     Created,
     /// Workflow completed successfully happy path.
     Completed,
@@ -123,7 +122,7 @@ pub trait Operation: Send + Sync {
         Self: Sized;
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct OperationResult {
     result: serde_json::Value,
     pub iteration: usize,
@@ -162,7 +161,7 @@ impl OperationResult {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OperationInput {
     pub operation_name: String,
     pub workflow_name: String,
@@ -219,6 +218,7 @@ impl OperationInput {
 /// Operation executor is the component that will typically maintain a statefull set of
 /// `Operation` instances and will delegate execution to the appropriate one.
 /// It will also take care of the retry strategy.
+#[cfg_attr(test, automock)]
 pub trait OperationExecutor: Send + Sync {
     fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
 }

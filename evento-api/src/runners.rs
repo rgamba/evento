@@ -1,6 +1,6 @@
 use crate::{
     state::{OperationExecutionData, State},
-    WorkflowData, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
+    OperationExecutor, WorkflowData, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -36,7 +36,6 @@ struct AsyncWorkflowRunner {
     workflow_registry: Arc<dyn WorkflowRegistry>,
     handle: JoinHandle<()>,
     sender: Arc<Mutex<Sender<WorkflowData>>>,
-    poller: Poller,
 }
 
 impl WorkflowRunner for AsyncWorkflowRunner {
@@ -97,7 +96,6 @@ impl AsyncWorkflowRunner {
             state: state.clone(),
             handle: main_handle,
             sender: Arc::new(Mutex::new(sender)),
-            poller: Poller::start_polling(state.clone()),
             workflow_registry,
         }
     }
@@ -135,7 +133,7 @@ impl AsyncWorkflowRunner {
                 );
                 state
                     .store
-                    .abort_workflow_with_error(workflow_data.id, error)?;
+                    .abort_workflow_with_error(workflow_data.id, error.clone())?;
             }
             Ok(WorkflowStatus::CompletedWithError(error)) => {
                 info!(
@@ -193,67 +191,10 @@ impl AsyncWorkflowRunner {
                 );
                 state
                     .store
-                    .abort_workflow_with_error(workflow_data.id, workflow_error)?;
+                    .abort_workflow_with_error(workflow_data.id, workflow_error.clone())?;
             }
         }
         result
-    }
-}
-
-struct Poller {
-    state: State,
-    handle: JoinHandle<()>,
-    stop_polling: Arc<AtomicBool>,
-}
-
-impl Poller {
-    pub fn start_polling(state: State) -> Self {
-        let state_clone = state.clone();
-        let stop_polling = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_polling.clone();
-        let main_handle = thread::spawn(move || {
-            while !stop_clone.load(Ordering::SeqCst) {
-                // Main loop - in case the poller thread crashes, we can restart and we don't block the main thread.
-                let stop = stop_clone.clone();
-                let another_state_clone = state_clone.clone();
-                let handle = thread::spawn(move || {
-                    // Poller loop thread
-                    while !stop.load(Ordering::SeqCst) {
-                        Self::poll(another_state_clone.clone());
-                    }
-                });
-                if let Err(err) = handle.join() {
-                    error!("Poller thread panicked: {:?}", err);
-                    thread::sleep(Duration::from_secs(1));
-                } else {
-                    error!("Polling has stopped");
-                }
-            }
-        });
-        Self {
-            state,
-            handle: main_handle,
-            stop_polling,
-        }
-    }
-
-    pub fn stop_polling(&self) {
-        self.stop_polling.store(true, Ordering::SeqCst);
-    }
-
-    fn poll(state: State) {
-        match state.store.fetch_operations(Utc::now()) {
-            Ok(operations) => {
-                //Queue operation execution
-            }
-            Err(err) => {
-                error!(
-                    "Unexpected error when trying to fetch operations from store: error={:?}",
-                    err
-                );
-                thread::sleep(Duration::from_millis(1000));
-            }
-        }
     }
 }
 
@@ -265,14 +206,6 @@ mod tests {
 
     use super::*;
     use crate::{registry::SimpleWorkflowRegistry, state::tests::create_test_state, Workflow};
-
-    #[test]
-    fn test_poller() {
-        let poller = Poller::start_polling(create_test_state());
-        thread::sleep(Duration::from_secs(5));
-        poller.stop_polling();
-        thread::sleep(Duration::from_secs(2));
-    }
 
     #[test]
     fn test_runner() {
@@ -293,14 +226,16 @@ mod tests {
             .unwrap();
         let runner = AsyncWorkflowRunner::new(state.clone(), Arc::new(registry));
 
-        runner.run(WorkflowData {
-            id: wf_id,
-            name: wf_name.clone(),
-            correlation_id: "test".to_string(),
-            status: WorkflowStatus::Created,
-            created_at: Utc::now(),
-            context: serde_json::Value::String("test".to_string()),
-        });
+        runner
+            .run(WorkflowData {
+                id: wf_id,
+                name: wf_name.clone(),
+                correlation_id: "test".to_string(),
+                status: WorkflowStatus::Created,
+                created_at: Utc::now(),
+                context: serde_json::Value::String("test".to_string()),
+            })
+            .unwrap();
         wait_for_workflow_to_complete(
             wf_id,
             state.clone(),

@@ -5,7 +5,6 @@ use crate::{
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +26,11 @@ pub trait Store: Send + Sync {
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>>;
 
     fn get_operation_results(&self, workflow_id: WorkflowId) -> Result<Vec<OperationResult>>;
+
+    fn get_operation_results_with_errors(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<Result<OperationResult, WorkflowError>>>;
 
     /// Fetch operations that whose run_date is less or equal to the current now provided.
     fn fetch_operations(&self, current_now: DateTime<Utc>) -> Result<Vec<OperationExecutionData>>;
@@ -54,7 +58,7 @@ pub trait Store: Send + Sync {
     fn abort_workflow_with_error(
         &self,
         workflow_id: WorkflowId,
-        error: &WorkflowError,
+        error: WorkflowError,
     ) -> Result<()>;
 
     /// Queue a single operation to be executed at some point in the future.
@@ -90,7 +94,8 @@ pub struct OperationExecutionData {
 }
 
 pub struct InMemoryStore {
-    pub operation_results: Mutex<HashMap<WorkflowId, Vec<(OperationName, OperationResult)>>>,
+    pub operation_results:
+        Mutex<HashMap<WorkflowId, Vec<(OperationName, Result<OperationResult, WorkflowError>)>>>,
     pub queue: Mutex<Vec<(OperationExecutionData, DateTime<Utc>, &'static str)>>, // (data, run_date)
     pub workflows: Mutex<Vec<WorkflowData>>,
 }
@@ -138,6 +143,24 @@ impl Store for InMemoryStore {
     }
 
     fn get_operation_results(&self, workflow_id: WorkflowId) -> Result<Vec<OperationResult>> {
+        let guard = self.operation_results.lock().unwrap();
+        if let Some(results) = guard.get(&workflow_id) {
+            Ok(results
+                .clone()
+                .into_iter()
+                .filter(|(_, result)| result.is_ok())
+                .map(|(name, result)| (name, result.unwrap()))
+                .map(|(_, result)| result)
+                .collect())
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn get_operation_results_with_errors(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<Result<OperationResult, WorkflowError>>> {
         let guard = self.operation_results.lock().unwrap();
         if let Some(results) = guard.get(&workflow_id) {
             Ok(results
@@ -210,10 +233,7 @@ impl Store for InMemoryStore {
             guard.insert(workflow_id, vec![]);
         }
         let list = guard.get_mut(&workflow_id).unwrap();
-        match result {
-            Ok(res) => list.push((operation_name.clone(), res)),
-            Err(_) => (),
-        };
+        list.push((operation_name.clone(), result));
         Ok(())
     }
 
@@ -246,9 +266,16 @@ impl Store for InMemoryStore {
     fn abort_workflow_with_error(
         &self,
         workflow_id: WorkflowId,
-        error: &WorkflowError,
+        error: WorkflowError,
     ) -> Result<()> {
-        unimplemented!()
+        let mut guard = self.workflows.lock().unwrap();
+        match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+            Some(wf) => {
+                wf.status = WorkflowStatus::Error(error);
+                Ok(())
+            }
+            None => bail!("Unable to find workflow with id: {}", workflow_id),
+        }
     }
 
     fn queue_operation(

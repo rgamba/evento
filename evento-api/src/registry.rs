@@ -3,8 +3,9 @@ use crate::{
     WorkflowContext, WorkflowError, WorkflowFactory, WorkflowId, WorkflowName, WorkflowRegistry,
 };
 use anyhow::{format_err, Result};
-use std::collections::HashMap;
-use std::sync::Arc;
+use serde_json::Value;
+use std::{collections::HashMap, thread};
+use std::{panic, sync::Arc};
 
 /// Simple registry that maps workflows based on simple string name
 pub struct SimpleWorkflowRegistry {
@@ -42,12 +43,29 @@ impl WorkflowRegistry for SimpleWorkflowRegistry {
 /// Simple operation executor.
 /// This executor works like an operation router with no retries.
 pub struct SimpleOperationExecutor {
-    pub operation_map: HashMap<String, Box<dyn Operation>>,
+    pub operation_map: HashMap<String, Arc<dyn Operation>>,
 }
 
 impl SimpleOperationExecutor {
-    pub fn new(operation_map: HashMap<String, Box<dyn Operation>>) -> Self {
+    pub fn new(operation_map: HashMap<String, Arc<dyn Operation>>) -> Self {
         Self { operation_map }
+    }
+
+    fn execute_internal(
+        operation: Arc<dyn Operation>,
+        input: OperationInput,
+    ) -> Result<Value, WorkflowError> {
+        let handle = thread::spawn(move || operation.execute(input));
+        match handle.join() {
+            Ok(result) => result,
+            Err(panic_msg) => {
+                log::error!("Operation execution panicked. error={:?}", panic_msg);
+                Err(WorkflowError {
+                    is_retriable: false,
+                    error: format!("{:?}", panic_msg),
+                })
+            }
+        }
     }
 }
 
@@ -56,8 +74,10 @@ impl OperationExecutor for SimpleOperationExecutor {
         let operation = self
             .operation_map
             .get(input.operation_name.as_str())
-            .unwrap();
-        match operation.execute(input.clone()) {
+            .unwrap()
+            .clone();
+        let result = Self::execute_internal(operation.clone(), input.clone());
+        match result {
             Ok(res) => Ok(OperationResult::new(
                 serde_json::to_value(res).unwrap(),
                 input.iteration,
@@ -77,7 +97,7 @@ pub struct RetryOperationExecutor {
 }
 
 impl RetryOperationExecutor {
-    pub fn new(operation_map: HashMap<String, Box<dyn Operation>>, max_retries: usize) -> Self {
+    pub fn new(operation_map: HashMap<String, Arc<dyn Operation>>, max_retries: usize) -> Self {
         Self {
             max_retries,
             simple_operation_executor: SimpleOperationExecutor::new(operation_map),
