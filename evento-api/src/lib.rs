@@ -1,8 +1,8 @@
 pub mod api;
-mod poller;
-mod registry;
-mod runners;
-mod state;
+pub mod poller;
+pub mod registry;
+pub mod runners;
+pub mod state;
 
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
@@ -13,14 +13,13 @@ use serde::Serialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub static CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub static RUSTC_VERSION: &str = env!("RUSTC_VERSION");
-
 /// Unique identifier for a workflow definition. Must be unique
 pub type WorkflowName = String;
 /// Internally generated workflow ID. Guaranteed to be unique across all workflows.
 pub type WorkflowId = Uuid;
+/// Workflow context is the initial data that gets injected to the workflow.
 pub type WorkflowContext = serde_json::Value;
+/// It will typically be used to identify a wait activity in order to mark it as completed.
 pub type ExternalInputKey = Uuid;
 /// External identifier for a workflow. Must be unique only within the associated workflow name.
 pub type CorrelationId = String;
@@ -29,6 +28,10 @@ pub type OperationIteration = usize;
 
 #[cfg_attr(test, automock)]
 pub trait Workflow {
+    /// Returns the new `WorkflowStatus` after the run operation or a `WorkflowError`
+    /// in case of error.
+    ///
+    /// This is the main function that will contain the implementation of the workflow.
     fn run(&self) -> Result<WorkflowStatus, WorkflowError>;
 }
 
@@ -41,17 +44,6 @@ pub trait WorkflowFactory: Send + Sync {
         context: WorkflowContext,
         execution_results: Vec<OperationResult>,
     ) -> Box<dyn Workflow>;
-}
-
-pub struct WorkflowDeclaration {
-    pub rustc_version: &'static str,
-    pub core_version: &'static str,
-    pub register: unsafe extern "C" fn(&mut dyn WorkflowFactoryRegistrar),
-}
-
-pub trait WorkflowFactoryRegistrar {
-    fn register_factory(&mut self, workflow_name: String, workflow: Box<dyn WorkflowFactory>);
-    fn register_operation_factory(&mut self, operation: Arc<dyn Operation>);
 }
 
 #[derive(Clone, Debug)]
@@ -112,12 +104,27 @@ impl From<String> for WorkflowError {
     }
 }
 
+/// Represents a workflow operation to be executed in isolation.
 pub trait Operation: Send + Sync {
+    /// Returns a result of `Value` containing the execution output in case of success
+    /// or a `WorkflowError` in case something went wrong.
+    ///
+    /// Implementation must be idempotent. It is possible that a workflow operation be executed
+    /// more than once. The implementation must guarantee that multiple execution won't leave the
+    /// system in an inconsistent state.
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError>;
 
+    /// Returns the name of the operation.
+    ///
+    /// This will typically be the same as the struct name, but can be different.
+    /// Must be unique in the registry.
     fn name(&self) -> &str;
 
-    fn validate_input(input: &OperationInput)
+    /// Returns an error in case the input is not valid for this operation.
+    ///
+    /// In case this operation returns an error, it typically means this is a programming error,
+    /// or data corruption. It's OK to panic.
+    fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized;
 }
@@ -161,6 +168,8 @@ impl OperationResult {
     }
 }
 
+/// This is the data that will be persisted in order to execute the operation at some
+/// point in the future.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OperationInput {
     pub operation_name: String,
@@ -249,6 +258,34 @@ pub enum RunResult<T> {
     Result(T),
 }
 
+/// Returns the activity result in case the activity has already been executed or
+/// returns the with a `RunNext` so that the given operation can be scheduled for execution.
+///
+/// It is important to note that this is only syntactic sugar and this will not execute the
+/// operation immediately, it will rather try to get the pre-recorded result or schedule it for
+/// execution if it is not available.
+///
+/// # Arguments
+///
+/// 1. Always pass in the `self` reference as first argument.
+/// 2. Operation call in the format: `OperationName<ReturnType>(input_argument)`, where the
+/// the `OperationName` is the name as defined in the operation registry, which can be the same
+/// as the struct name but could also be different.
+///
+/// # Examples
+///
+/// ```
+/// # use evento_api::{WorkflowError, WorkflowStatus};
+/// # struct WfTest;
+/// # impl WfTest {
+///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
+/// #       let my_name = "Ricardo".to_string();
+///         // This reads: run `GreetOperation` operation with `my_name` as input parameter
+///         // and I expect to get a `String` as result.
+///         let result = run!(self, GreetOperation<String>(my_name));
+///     }
+/// # }
+/// ```
 #[macro_export]
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) =>  {{
@@ -275,12 +312,32 @@ macro_rules! _run_internal {
             let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
                 .unwrap();
             $self.increase_iteration_counter(&operation_name);
-            $op::validate_input(&input);
+            $op::validate_input(&input).unwrap();
             ::evento_api::RunResult::Return(input)
         }
     }};
 }
 
+/// Works exactly the same as [run] but when a fanout of activities needs to be executed
+/// and returns a `Vec` of results once **all** the activities have been executed.
+///
+/// The results in the result `Vec` will come in the exact same order as they appear on
+/// the declaration.
+/// All activity return types must have the same return type.
+///
+/// # Examples
+///
+/// ```
+/// # use evento_api::{WorkflowError, WorkflowStatus};
+/// # struct WfTest;
+/// # impl WfTest {
+///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
+/// #       let my_name = "Ricardo".to_string();
+/// #       let other_name = "Jose".to_string();
+///         let results = run!(self, GreetOperation<String>(my_name), GreetOperation<String>(other_name));
+///     }
+/// # }
+/// ```
 #[macro_export]
 macro_rules! run_all {
     ( $self:ident, $( $op:ident <$result_type:ident> ($arg:expr) ),+ $(,)* ) =>  {{
@@ -305,6 +362,36 @@ macro_rules! run_all {
     }};
 }
 
+/// Waits for the completion of an external activity or returns the result value if the
+/// activity has been completed.
+///
+/// This is similar to a regular [`run`] activity in that it has an operation associated with it
+/// and it can receive any type of input and return an output.
+/// The difference with regular operations is that the wait operation will first wait for the
+/// external input to be present before it can begin to execute the operation.
+///
+/// # Arguments
+///
+/// 1. Always `self`
+/// 2. Operation call in the format `OperationName<ReturnType>(input_argument)`
+/// 3. External key identifier, must be of the type [`ExternalInputKey`]
+/// 4. [std::time::Duration] as a timeout relative to the current time. If the operation has not been
+/// completed by this time, then the workflow will be aborted.
+///
+/// # Examples
+///
+/// ```
+/// # use evento_api::{WorkflowError, WorkflowStatus};
+/// # use uuid::Uuid;
+/// # struct WfTest;
+/// # impl WfTest {
+///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
+///         // This is the key that will be used to identify and complete the wait activity.
+///         let external_key = Uuid::new_v4();
+///         let approval_signature = wait_for_external!(self, Approval<String>(), external_key, Duration::from_hours(1));
+///     }
+/// # }
+/// ```
 #[macro_export]
 macro_rules! wait_for_external {
     ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr, $corr_id:expr ) =>  {{
@@ -313,20 +400,6 @@ macro_rules! wait_for_external {
             $crate::RunResult::Result(r) => r
         }
     }};
-}
-
-#[macro_export]
-macro_rules! export_workflow {
-    ($register:expr) => {
-        #[doc(hidden)]
-        #[no_mangle]
-        pub static workflow_declaration: $crate::WorkflowDeclaration =
-            $crate::WorkflowDeclaration {
-                rustc_version: $crate::RUSTC_VERSION,
-                core_version: $crate::CORE_VERSION,
-                register: $register,
-            };
-    };
 }
 
 #[macro_export]
@@ -380,7 +453,7 @@ pub mod tests {
             self.operation_name.as_str()
         }
 
-        fn validate_input(input: &OperationInput)
+        fn validate_input(input: &OperationInput) -> Result<()>
         where
             Self: Sized,
         {

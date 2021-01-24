@@ -90,11 +90,11 @@ impl Operation for GenerateProposal {
         })
     }
 
-    fn validate_input(input: &OperationInput)
+    fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized,
     {
-        input.value::<ProposalInput>().unwrap();
+        input.value::<ProposalInput>().map(|_| ())
     }
 }
 
@@ -108,8 +108,8 @@ impl Operation for NotifyApprovers {
         operation_ok!(true)
     }
 
-    fn validate_input(input: &OperationInput) {
-        input.value::<Proposal>().unwrap();
+    fn validate_input(input: &OperationInput) -> Result<()> {
+        input.value::<Proposal>().map(|_| ())
     }
 }
 
@@ -123,11 +123,11 @@ impl Operation for ProcessApproval {
         operation_ok!(ProcessApprovalResult::Ok(input.iteration + 1))
     }
 
-    fn validate_input(input: &OperationInput)
+    fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized,
     {
-        input.value::<Proposal>().unwrap();
+        input.value::<Proposal>().map(|_| ())
     }
 }
 

@@ -101,20 +101,9 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
     };
-    // Create workflow export code
-    let workflow_export = quote! {
-        ::evento_api::export_workflow!(register);
-        extern "C" fn register(registrar: &mut dyn ::evento_api::WorkflowFactoryRegistrar) {
-            registrar.register_factory(
-                String::from(#workflow_name),
-                Box::new(#factory_ident),
-            );
-        }
-    };
     let output = quote! {
         #workflow_def
         #factory_def
-        #workflow_export
     };
     println!(">>>> OUTPUT: {}", output.to_string());
     output.into()
