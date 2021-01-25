@@ -230,12 +230,21 @@ impl OperationInput {
 /// It will also take care of the retry strategy.
 #[cfg_attr(test, automock)]
 pub trait OperationExecutor: Send + Sync {
+    /// Executes the given operation and returns an [OperationResult] in case of success or
+    /// [WorkflowError] in case any expected or unexpected error happened.
+    ///
+    /// This function should not panic.
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The operation input as passed in by the workflow.
     fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
 }
 
 /// Workflow runner is the component that abstracts the workflow execution strategy.
 /// It will typically hold a map of workflow factories and will keep a workflow factory registry
 /// in order to be able to dynamically create and execute workflows.
+#[cfg_attr(test, automock)]
 pub trait WorkflowRunner: Send + Sync {
     fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError>;
 }

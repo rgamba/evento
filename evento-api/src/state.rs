@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct State {
     pub store: Arc<dyn Store>,
-    //pub workflow_runner: Arc<dyn WorkflowRunner>,
 }
 
 pub trait Store: Send + Sync {
@@ -89,6 +88,7 @@ pub trait Store: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct OperationExecutionData {
     pub workflow_id: WorkflowId,
+    pub correlation_id: CorrelationId,
     pub retry_count: Option<usize>,
     pub input: OperationInput,
 }
@@ -382,6 +382,7 @@ pub mod tests {
         // Queue operation
         let execution_data = OperationExecutionData {
             workflow_id: wf_id,
+            correlation_id: String::new(),
             retry_count: None,
             input: OperationInput::new(
                 wf_name.clone(),
@@ -425,6 +426,7 @@ pub mod tests {
         let external_key = Uuid::new_v4();
         let execution_data = OperationExecutionData {
             workflow_id: wf_id,
+            correlation_id: String::new(),
             retry_count: None,
             input: OperationInput::new_external(
                 wf_name.clone(),

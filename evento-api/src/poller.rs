@@ -16,7 +16,8 @@ use thread::JoinHandle;
 
 use crate::{
     state::{OperationExecutionData, State},
-    OperationExecutor, OperationResult, WorkflowError,
+    OperationExecutor, OperationResult, WorkflowData, WorkflowError, WorkflowRunner,
+    WorkflowStatus,
 };
 
 lazy_static! {
@@ -25,19 +26,29 @@ lazy_static! {
 
 static MAX_RETRIES: u64 = 10;
 
-pub fn start_polling(state: State, executor: Arc<dyn OperationExecutor>) -> JoinHandle<()> {
+pub fn start_polling(
+    state: State,
+    executor: Arc<dyn OperationExecutor>,
+    workflow_runner: Arc<dyn WorkflowRunner>,
+) -> JoinHandle<()> {
     let state_clone = state.clone();
     let executor_clone = executor.clone();
+    let runner_clone = workflow_runner.clone();
     thread::spawn(move || {
         while !STOP_POLLING.load(Ordering::SeqCst) {
             info!("Starting poller thread");
             // Main loop - in case the poller thread crashes, we can restart and we don't block the main thread.
             let another_state_clone = state_clone.clone();
             let another_executor_clone = executor_clone.clone();
+            let another_runner_clone = runner_clone.clone();
             let handle = thread::spawn(move || {
                 // Poller loop thread
                 while !STOP_POLLING.load(Ordering::SeqCst) {
-                    poll(another_state_clone.clone(), another_executor_clone.clone());
+                    poll(
+                        another_state_clone.clone(),
+                        another_executor_clone.clone(),
+                        another_runner_clone.clone(),
+                    );
                 }
             });
             if let Err(err) = handle.join() {
@@ -54,7 +65,11 @@ pub fn stop_polling() {
     STOP_POLLING.store(true, Ordering::SeqCst);
 }
 
-fn poll(state: State, executor: Arc<dyn OperationExecutor>) {
+fn poll(
+    state: State,
+    executor: Arc<dyn OperationExecutor>,
+    workflow_runner: Arc<dyn WorkflowRunner>,
+) {
     match state.store.fetch_operations(Utc::now()) {
         Ok(operations) => {
             if operations.is_empty() {
@@ -73,6 +88,7 @@ fn poll(state: State, executor: Arc<dyn OperationExecutor>) {
                             state.clone(),
                             operation.clone(),
                             operation_result,
+                            workflow_runner.clone(),
                         );
                     }
                     Err(error) => handle_execution_failure(state.clone(), operation.clone(), error),
@@ -93,7 +109,16 @@ fn handle_execution_success(
     state: State,
     data: OperationExecutionData,
     operation_result: OperationResult,
+    workflow_runner: Arc<dyn WorkflowRunner>,
 ) {
+    let workflow_data = match state.store.get_workflow(data.workflow_id) {
+        // This is OK, the operation will be retried.
+        Err(_) | Ok(None) => {
+            log::error!("Unable to get workflow data in order to complete successful execution");
+            return;
+        }
+        Ok(Some(data)) => data,
+    };
     if let Err(e) = state.store.store_execution_result(
         data.workflow_id,
         data.input.operation_name.clone(),
@@ -112,14 +137,8 @@ fn handle_execution_success(
         log::error!("Unable to dequeue operation: {:?}", e);
         return;
     }
-    if let Err(e) = state.store.complete_workflow(data.workflow_id) {
-        // This will leave the operation in an inconsistent state.
-        //TODO:raise alert
-        log::error!(
-            "Unable to mark workflow as completed: workflow_id={}",
-            data.workflow_id
-        );
-    }
+    // Run the workflow in order to get next inputs.
+    workflow_runner.run(workflow_data);
 }
 
 fn handle_execution_failure(state: State, data: OperationExecutionData, error: WorkflowError) {
@@ -193,12 +212,15 @@ fn get_new_retry_date(retry_count: u64) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod test {
-    use crate::{MockOperationExecutor, OperationInput, OperationResult, WorkflowId};
+    use crate::{
+        MockOperationExecutor, MockWorkflowRunner, OperationInput, OperationResult, WorkflowId,
+    };
     use std::collections::HashMap;
 
     use crate::{registry::SimpleOperationExecutor, state::tests::create_test_state};
 
     use super::*;
+    use crate::runners::tests::wait_for_workflow_to_complete;
     use mockall::predicate::eq;
     use uuid::Uuid;
 
@@ -215,19 +237,33 @@ mod test {
         let expected_result =
             OperationResult::new(String::from("Good"), 0, String::from("operation_test")).unwrap();
         let result_clone = expected_result.clone();
+        let mut workflow_runner = MockWorkflowRunner::new();
+        workflow_runner
+            .expect_run()
+            .times(1)
+            .returning(|_| Ok(WorkflowStatus::Completed));
         let mut executor = MockOperationExecutor::new();
         executor
             .expect_execute()
             .with(eq(operation_input.clone()))
             .return_once(move |_| Ok(result_clone));
         let state = create_test_state();
-        start_polling(state.clone(), Arc::new(executor));
-
+        start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
+        state
+            .store
+            .create_workflow(
+                "test".to_string(),
+                wf_id,
+                String::new(),
+                serde_json::Value::Null,
+            )
+            .unwrap();
         state
             .store
             .queue_operation(
                 OperationExecutionData {
                     workflow_id: wf_id,
+                    correlation_id: "".to_string(),
                     retry_count: None,
                     input: operation_input.clone(),
                 },
@@ -251,6 +287,11 @@ mod test {
         )
         .unwrap();
         let wf_id = Uuid::new_v4();
+        let mut workflow_runner = MockWorkflowRunner::new();
+        workflow_runner
+            .expect_run()
+            .times(0)
+            .returning(|_| Ok(WorkflowStatus::Completed));
         let mut executor = MockOperationExecutor::new();
         executor
             .expect_execute()
@@ -262,13 +303,14 @@ mod test {
                 })
             });
         let state = create_test_state();
-        start_polling(state.clone(), Arc::new(executor));
+        start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
 
         state
             .store
             .queue_operation(
                 OperationExecutionData {
                     workflow_id: wf_id,
+                    correlation_id: "".to_string(),
                     retry_count: None,
                     input: operation_input.clone(),
                 },

@@ -1,6 +1,7 @@
 use crate::{
     state::{OperationExecutionData, State},
-    OperationExecutor, WorkflowData, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
+    OperationExecutor, WorkflowData, WorkflowError, WorkflowRegistry, WorkflowRunner,
+    WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -12,7 +13,7 @@ use std::{println as info, println as warn, println as error};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
     thread,
@@ -26,6 +27,15 @@ lazy_static! {
         DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(i64::MAX, 0), Utc);
 }
 
+type WorkflowSender = Sender<(
+    WorkflowData,
+    Sender<anyhow::Result<WorkflowStatus, WorkflowError>>,
+)>;
+type WorkflowReceiver = Receiver<(
+    WorkflowData,
+    Sender<anyhow::Result<WorkflowStatus, WorkflowError>>,
+)>;
+
 /// Workflow runner implementation that tries to run the workflow definition
 /// by injecting the available operation executions into the workflow.
 /// If any operation or wait has not been completed, it delegates the execution and
@@ -35,22 +45,24 @@ struct AsyncWorkflowRunner {
     state: State,
     workflow_registry: Arc<dyn WorkflowRegistry>,
     handle: JoinHandle<()>,
-    sender: Arc<Mutex<Sender<WorkflowData>>>,
+    sender: Arc<Mutex<WorkflowSender>>,
 }
 
 impl WorkflowRunner for AsyncWorkflowRunner {
-    fn run(
-        &self,
-        workflow_data: crate::WorkflowData,
-    ) -> anyhow::Result<crate::WorkflowStatus, crate::WorkflowError> {
-        self.sender.lock().unwrap().send(workflow_data);
-        Ok(WorkflowStatus::Created)
+    fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError> {
+        let (result_sender, result_receiver) = mpsc::channel();
+        self.sender
+            .lock()
+            .unwrap()
+            .send((workflow_data, result_sender))
+            .map_err(|e| format_err!("{:?}", e))?;
+        result_receiver.recv().map_err(|e| format_err!("{:?}", e))?
     }
 }
 
 impl AsyncWorkflowRunner {
     fn new(state: State, workflow_registry: Arc<dyn WorkflowRegistry>) -> Self {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver): (WorkflowSender, WorkflowReceiver) = mpsc::channel();
         let state_clone = state.clone();
         let registry_clone = workflow_registry.clone();
         let rx = Arc::new(Mutex::new(receiver));
@@ -65,17 +77,19 @@ impl AsyncWorkflowRunner {
                     // Runner loop thread
                     loop {
                         match another_rx_clone.lock().unwrap().recv() {
-                            Ok(data) => {
+                            Ok((data, result_sender)) => {
                                 info!("New request to process: {:?}", data);
                                 match Self::run_internal(
                                     another_state_clone.clone(),
                                     data,
                                     another_registry_clone.clone(),
                                 ) {
-                                    Ok(_) => {
+                                    Ok(result) => {
+                                        result_sender.send(Ok(result));
                                         info!("Successfully ran workflow.");
                                     }
                                     Err(err) => {
+                                        result_sender.send(Err(err.clone()));
                                         error!("Unexpected workflow run error. error={:?}", err);
                                     }
                                 }
@@ -156,6 +170,7 @@ impl AsyncWorkflowRunner {
                             (
                                 OperationExecutionData {
                                     workflow_id: workflow_data.id,
+                                    correlation_id: workflow_data.correlation_id.clone(),
                                     retry_count: None,
                                     input: input.clone(),
                                 },
@@ -173,6 +188,7 @@ impl AsyncWorkflowRunner {
                 state.store.queue_operation(
                     OperationExecutionData {
                         workflow_id: workflow_data.id,
+                        correlation_id: workflow_data.correlation_id.clone(),
                         retry_count: None,
                         input: input.clone(),
                     },
@@ -199,7 +215,7 @@ impl AsyncWorkflowRunner {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::{MockWorkflow, MockWorkflowFactory, WorkflowError, WorkflowFactory, WorkflowId};
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -226,7 +242,7 @@ mod tests {
             .unwrap();
         let runner = AsyncWorkflowRunner::new(state.clone(), Arc::new(registry));
 
-        runner
+        let result = runner
             .run(WorkflowData {
                 id: wf_id,
                 name: wf_name.clone(),
@@ -236,13 +252,8 @@ mod tests {
                 context: serde_json::Value::String("test".to_string()),
             })
             .unwrap();
-        wait_for_workflow_to_complete(
-            wf_id,
-            state.clone(),
-            WorkflowStatus::Completed,
-            Duration::from_secs(3),
-        )
-        .unwrap();
+        assert!(matches!(result, WorkflowStatus::Completed));
+        wait_for_workflow_to_complete(wf_id, state.clone(), Duration::from_secs(3)).unwrap();
     }
 
     fn create_test_workflow_factory(
@@ -260,7 +271,6 @@ mod tests {
     pub fn wait_for_workflow_to_complete(
         workflow_id: WorkflowId,
         state: State,
-        workflow_status: WorkflowStatus,
         timeout: Duration,
     ) -> Result<WorkflowData> {
         let time_timeout = Utc::now()
@@ -268,10 +278,7 @@ mod tests {
             .unwrap();
         loop {
             if Utc::now().ge(&time_timeout) {
-                break Err(format_err!(
-                    "Workflow failed to reach status: {:?}",
-                    workflow_status
-                ));
+                break Err(format_err!("Workflow failed to reach completed status"));
             }
             let wf = state.store.get_workflow(workflow_id).unwrap().unwrap();
             if let WorkflowStatus::Completed = wf.status {

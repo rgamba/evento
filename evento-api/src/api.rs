@@ -5,7 +5,7 @@ use crate::{
     WorkflowStatus,
 };
 use crate::{OperationExecutor, WorkflowRegistry};
-use anyhow::Result;
+use anyhow::{format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use std::sync::Arc;
@@ -30,7 +30,11 @@ impl WorkflowFacade {
         operation_executor: Arc<dyn OperationExecutor>,
         workflow_runner: Arc<dyn WorkflowRunner>,
     ) -> Self {
-        start_polling(state.clone(), operation_executor.clone());
+        start_polling(
+            state.clone(),
+            operation_executor.clone(),
+            workflow_runner.clone(),
+        );
         Self {
             workflow_registry,
             workflow_runner,
@@ -69,7 +73,7 @@ impl WorkflowFacade {
                 created_at: Utc::now(),
                 context,
             })
-            .map_err(|err| format_err("{:?}", err))?;
+            .map_err(|err| format_err!("{:?}", err))?;
         Ok(())
     }
 
