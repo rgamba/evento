@@ -1,3 +1,4 @@
+//! Framework for declarative workflows.
 pub mod api;
 pub mod poller;
 pub mod registry;

@@ -2,6 +2,7 @@ use crate::poller::start_polling;
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
     OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
+    WorkflowStatus,
 };
 use crate::{OperationExecutor, WorkflowRegistry};
 use anyhow::Result;
@@ -53,9 +54,23 @@ impl WorkflowFacade {
         correlation_id: CorrelationId,
         context: WorkflowContext,
     ) -> Result<()> {
-        self.state
-            .store
-            .create_workflow(workflow_name, workflow_id, correlation_id, context)
+        self.state.store.create_workflow(
+            workflow_name.clone(),
+            workflow_id,
+            correlation_id.clone(),
+            context.clone(),
+        );
+        self.workflow_runner
+            .run(WorkflowData {
+                id: workflow_id,
+                name: workflow_name,
+                correlation_id,
+                status: WorkflowStatus::Created,
+                created_at: Utc::now(),
+                context,
+            })
+            .map_err(|err| format_err("{:?}", err))?;
+        Ok(())
     }
 
     /// Completes an external wait activity for a workflow.
@@ -133,7 +148,8 @@ impl WorkflowFacade {
     ///
     /// # Arguments
     ///
-    /// - `workflow_id` - The workflow ID    pub fn cancel_workflow(&self, workflow_id: WorkflowId) -> Result<WorkflowData> {
+    /// - `workflow_id` - The workflow ID    
+    pub fn cancel_workflow(&self, workflow_id: WorkflowId) -> Result<WorkflowData> {
         unimplemented!()
     }
 }
