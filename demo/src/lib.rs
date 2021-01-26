@@ -51,11 +51,11 @@ impl Workflow for ProposalApprovalWorkflow {
 }
 
 impl ProposalApprovalWorkflow {
-    fn required_approvals(&self, proposal: &Proposal) -> usize {
+    fn required_approvals(&self, _proposal: &Proposal) -> usize {
         return 3;
     }
 
-    fn proposal_expiration(&self, proposal: &Proposal) -> DateTime<Utc> {
+    fn proposal_expiration(&self, _proposal: &Proposal) -> DateTime<Utc> {
         Utc::now()
     }
 }
@@ -104,7 +104,7 @@ impl Operation for NotifyApprovers {
         "NotifyApprovers"
     }
 
-    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         operation_ok!(true)
     }
 

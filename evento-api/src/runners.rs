@@ -1,24 +1,18 @@
 use crate::{
     state::{OperationExecutionData, State},
-    OperationExecutor, WorkflowData, WorkflowError, WorkflowRegistry, WorkflowRunner,
-    WorkflowStatus,
+    WorkflowData, WorkflowError, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
 };
-use anyhow::{bail, format_err, Result};
+use anyhow::{format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
-#[cfg(not(test))]
 use log::{error, info, warn};
-#[cfg(test)]
-use std::{println as info, println as warn, println as error};
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, Sender},
         Arc, Mutex,
     },
     thread,
     time::Duration,
-    todo,
 };
 use thread::JoinHandle;
 
@@ -41,10 +35,10 @@ type WorkflowReceiver = Receiver<(
 /// If any operation or wait has not been completed, it delegates the execution and
 /// stops. It relies on another component to actually execute the operation asynchronously
 /// and populate the execution results.
-struct AsyncWorkflowRunner {
-    state: State,
-    workflow_registry: Arc<dyn WorkflowRegistry>,
-    handle: JoinHandle<()>,
+pub struct AsyncWorkflowRunner {
+    _state: State,
+    _workflow_registry: Arc<dyn WorkflowRegistry>,
+    _handle: JoinHandle<()>,
     sender: Arc<Mutex<WorkflowSender>>,
 }
 
@@ -61,7 +55,7 @@ impl WorkflowRunner for AsyncWorkflowRunner {
 }
 
 impl AsyncWorkflowRunner {
-    fn new(state: State, workflow_registry: Arc<dyn WorkflowRegistry>) -> Self {
+    pub fn new(state: State, workflow_registry: Arc<dyn WorkflowRegistry>) -> Self {
         let (sender, receiver): (WorkflowSender, WorkflowReceiver) = mpsc::channel();
         let state_clone = state.clone();
         let registry_clone = workflow_registry.clone();
@@ -85,11 +79,18 @@ impl AsyncWorkflowRunner {
                                     another_registry_clone.clone(),
                                 ) {
                                     Ok(result) => {
-                                        result_sender.send(Ok(result));
+                                        if let Err(e) = result_sender.send(Ok(result.clone())) {
+                                            error!("Unable to send result back to caller. result={:?}, error={:?}", result, e);
+                                        }
                                         info!("Successfully ran workflow.");
                                     }
                                     Err(err) => {
-                                        result_sender.send(Err(err.clone()));
+                                        if let Err(e) = result_sender.send(Err(err.clone())) {
+                                            error!(
+                                                "Unable to send response to caller. error={:?}",
+                                                e
+                                            );
+                                        }
                                         error!("Unexpected workflow run error. error={:?}", err);
                                     }
                                 }
@@ -107,10 +108,10 @@ impl AsyncWorkflowRunner {
             }
         });
         Self {
-            state: state.clone(),
-            handle: main_handle,
+            _state: state.clone(),
+            _handle: main_handle,
             sender: Arc::new(Mutex::new(sender)),
-            workflow_registry,
+            _workflow_registry: workflow_registry,
         }
     }
 

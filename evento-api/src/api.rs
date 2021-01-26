@@ -24,7 +24,7 @@ pub struct WorkflowFacade {
 }
 
 impl WorkflowFacade {
-    fn new(
+    pub fn new(
         state: State,
         workflow_registry: Arc<dyn WorkflowRegistry>,
         operation_executor: Arc<dyn OperationExecutor>,
@@ -63,7 +63,7 @@ impl WorkflowFacade {
             workflow_id,
             correlation_id.clone(),
             context.clone(),
-        );
+        )?;
         self.workflow_runner
             .run(WorkflowData {
                 id: workflow_id,
@@ -116,8 +116,7 @@ impl WorkflowFacade {
                 );
                 format_err!("{:?}", err)
             })?;
-        let operation_data = self
-            .state
+        self.state
             .store
             .complete_external_operation(external_key, external_input_payload)
             .map_err(|err| {
@@ -153,7 +152,7 @@ impl WorkflowFacade {
     /// - `workflow_id` - The workflow ID
     pub fn get_workflow_by_correlation_id(
         &self,
-        workflow_name: WorkflowName,
+        _workflow_name: WorkflowName,
         correlation_id: CorrelationId,
     ) -> Result<Option<WorkflowData>> {
         self.state
@@ -182,9 +181,9 @@ impl WorkflowFacade {
 
     pub fn remove_operation_result(
         &self,
-        workflow_id: WorkflowId,
-        operation_name: OperationName,
-        iteration: OperationIteration,
+        _workflow_id: WorkflowId,
+        _operation_name: OperationName,
+        _iteration: OperationIteration,
     ) -> Result<OperationResult> {
         unimplemented!()
     }
@@ -195,7 +194,7 @@ impl WorkflowFacade {
     /// # Arguments
     ///
     /// - `workflow_id` - The workflow ID
-    pub fn run_async(&self, workflow_id: WorkflowId) -> Result<()> {
+    pub fn run_async(&self, _workflow_id: WorkflowId) -> Result<()> {
         unimplemented!()
     }
 
@@ -205,7 +204,7 @@ impl WorkflowFacade {
     /// # Arguments
     ///
     /// - `workflow_id` - The workflow ID    
-    pub fn cancel_workflow(&self, workflow_id: WorkflowId) -> Result<WorkflowData> {
+    pub fn cancel_workflow(&self, _workflow_id: WorkflowId) -> Result<WorkflowData> {
         unimplemented!()
     }
 }

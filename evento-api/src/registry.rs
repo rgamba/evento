@@ -5,8 +5,8 @@ use crate::{
 };
 use anyhow::{format_err, Result};
 use serde_json::Value;
+use std::sync::Arc;
 use std::{collections::HashMap, thread};
-use std::{panic, sync::Arc};
 
 /// Simple registry that maps workflows based on simple string name
 pub struct SimpleWorkflowRegistry {

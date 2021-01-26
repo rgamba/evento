@@ -105,7 +105,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
         #workflow_def
         #factory_def
     };
-    println!(">>>> OUTPUT: {}", output.to_string());
+    //println!(">>>> OUTPUT: {}", output.to_string());
     output.into()
 }
 

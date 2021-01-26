@@ -1,5 +1,8 @@
 //! Framework for declarative workflows.
+mod admin;
 pub mod api;
+#[cfg(test)]
+mod integ_tests;
 pub mod poller;
 pub mod registry;
 pub mod runners;
@@ -532,7 +535,7 @@ pub mod tests {
             self.operation_name.as_str()
         }
 
-        fn validate_input(input: &OperationInput) -> Result<()>
+        fn validate_input(_input: &OperationInput) -> Result<()>
         where
             Self: Sized,
         {
@@ -574,7 +577,7 @@ pub mod tests {
             let mut results = Vec::new();
             let factory = self.workflow_factory_map.get(&workflow_data.name).unwrap();
             let res = loop {
-                let mut wf = factory.create(
+                let wf = factory.create(
                     workflow_data.id,
                     workflow_data.correlation_id.clone(),
                     workflow_data.context.clone(),
@@ -587,7 +590,7 @@ pub mod tests {
                             results.push(self.operation_executor.execute(op)?);
                         }
                     }
-                    Ok(WorkflowStatus::WaitForExternal((input, timeout))) => {
+                    Ok(WorkflowStatus::WaitForExternal((input, _))) => {
                         //TODO: figure out how to pass the external input.
                         results.push(self.operation_executor.execute(input)?);
                     }

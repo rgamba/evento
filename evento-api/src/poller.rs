@@ -1,9 +1,6 @@
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
-#[cfg(not(test))]
 use log::{error, info, warn};
-#[cfg(test)]
-use std::{println as info, println as warn, println as error};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
