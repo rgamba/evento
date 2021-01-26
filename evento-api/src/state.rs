@@ -24,6 +24,16 @@ pub trait Store: Send + Sync {
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>>;
 
+    fn get_workflow_by_correlation_id(
+        &self,
+        correlation_id: CorrelationId,
+    ) -> Result<Option<WorkflowData>>;
+
+    fn find_wait_operation(
+        &self,
+        external_key: ExternalInputKey,
+    ) -> Result<Option<OperationExecutionData>>;
+
     fn get_operation_results(&self, workflow_id: WorkflowId) -> Result<Vec<OperationResult>>;
 
     fn get_operation_results_with_errors(
@@ -34,6 +44,16 @@ pub trait Store: Send + Sync {
     /// Fetch operations that whose run_date is less or equal to the current now provided.
     fn fetch_operations(&self, current_now: DateTime<Utc>) -> Result<Vec<OperationExecutionData>>;
 
+    /// Returns the execution data for the external operation.
+    ///
+    /// The implementation should add the external input to the operation execution data and given
+    /// that the external input is available at this time, the operation should be scheduled to be
+    /// executed ASAP.
+    ///
+    /// # Arguments
+    ///
+    /// * `external_key` - The external key used to uniquely identify the wait operation.
+    /// * `external_input_payload` - The payload that will be used to complete the operation.
     fn complete_external_operation(
         &self,
         external_key: ExternalInputKey,
@@ -142,6 +162,32 @@ impl Store for InMemoryStore {
             .map(|w| w.clone()))
     }
 
+    fn get_workflow_by_correlation_id(
+        &self,
+        correlation_id: CorrelationId,
+    ) -> Result<Option<WorkflowData>> {
+        let guard = self.workflows.lock().unwrap();
+        Ok(guard
+            .iter()
+            .find(|w| w.correlation_id == correlation_id)
+            .map(|w| w.clone()))
+    }
+
+    fn find_wait_operation(
+        &self,
+        external_key: ExternalInputKey,
+    ) -> Result<Option<OperationExecutionData>> {
+        let mut guard = self.queue.lock().unwrap();
+        let data = guard
+            .iter()
+            .find(|(data, _, _)| {
+                data.input.external_key.is_some()
+                    && data.input.external_key.unwrap() == external_key
+            })
+            .map(|(data, _, _)| data.clone());
+        Ok(data)
+    }
+
     fn get_operation_results(&self, workflow_id: WorkflowId) -> Result<Vec<OperationResult>> {
         let guard = self.operation_results.lock().unwrap();
         if let Some(results) = guard.get(&workflow_id) {
@@ -201,15 +247,16 @@ impl Store for InMemoryStore {
                 Some(id) => external_key == id,
                 None => false,
             } && data.input.external_input.is_none())
-            .map(|(ref mut data, _, state)| {
-                *state = Self::DEQUEUED;
+            .map(|(ref mut data, run_date, state)| {
+                *state = Self::QUEUED;
                 data.input.external_input = Some(external_input_payload.clone());
+                *run_date = Utc::now();
                 data.clone()
             })
             .ok_or(format_err!(
                 "Unable to find operation with external key provided"
             ))?;
-        //TODO: somehow verify that the externak unput payload is correct and statically type it.
+        //TODO: somehow verify that the external input payload is correct and statically type it.
         self.store_execution_result(
             data.workflow_id,
             data.input.operation_name.clone(),

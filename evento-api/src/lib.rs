@@ -85,6 +85,54 @@ pub enum WorkflowStatus {
 pub struct WorkflowError {
     pub is_retriable: bool,
     pub error: String,
+    pub error_type: WorkflowErrorType,
+}
+
+#[derive(Debug, Clone)]
+pub enum WorkflowErrorType {
+    DomainError,
+    InternalError,
+    OperationExecutionError,
+}
+
+impl WorkflowError {
+    fn internal_error(error: String) -> Self {
+        Self {
+            is_retriable: true,
+            error_type: WorkflowErrorType::InternalError,
+            error,
+        }
+    }
+
+    fn retriable_domain_error(error: String) -> Self {
+        Self {
+            is_retriable: true,
+            error_type: WorkflowErrorType::DomainError,
+            error,
+        }
+    }
+
+    fn non_retriable_domain_error(error: String) -> Self {
+        Self {
+            is_retriable: false,
+            error_type: WorkflowErrorType::DomainError,
+            error,
+        }
+    }
+
+    pub fn is_internal_error(&self) -> bool {
+        match self.error_type {
+            WorkflowErrorType::InternalError => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_domain_error(&self) -> bool {
+        match self.error_type {
+            WorkflowErrorType::DomainError => true,
+            _ => false,
+        }
+    }
 }
 
 impl From<anyhow::Error> for WorkflowError {
@@ -92,6 +140,7 @@ impl From<anyhow::Error> for WorkflowError {
         Self {
             is_retriable: false,
             error: err.to_string(),
+            error_type: WorkflowErrorType::InternalError,
         }
     }
 }
@@ -101,6 +150,7 @@ impl From<String> for WorkflowError {
         Self {
             is_retriable: false,
             error: err,
+            error_type: WorkflowErrorType::InternalError,
         }
     }
 }
@@ -239,6 +289,14 @@ pub trait OperationExecutor: Send + Sync {
     ///
     /// * `input` - The operation input as passed in by the workflow.
     fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError>;
+
+    fn validate_external_input(
+        &self,
+        _operation_name: OperationName,
+        _external_input: serde_json::Value,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Workflow runner is the component that abstracts the workflow execution strategy.
@@ -246,6 +304,17 @@ pub trait OperationExecutor: Send + Sync {
 /// in order to be able to dynamically create and execute workflows.
 #[cfg_attr(test, automock)]
 pub trait WorkflowRunner: Send + Sync {
+    /// Returns the new [WorkflowStatus] after the workflow has been ran.
+    ///
+    /// The implementation can decide whether the execution is done synchronously or not.
+    /// In case it is done synchronously, the caller must handle retry in case of infra error.
+    /// In case the implementation is asynchronous (meaning the request is sent to a queue to
+    /// be processed eventually), then result should be ignored but there must be a guarantee that
+    /// the workflow will be run at eventually and retries should be taken care of by the impl.
+    ///
+    /// # Arguments
+    ///
+    /// * `workflow_data` - The data that uniquely identify the workflow to be ran.
     fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError>;
 }
 
@@ -328,10 +397,10 @@ macro_rules! _run_internal {
     }};
 }
 
-/// Works exactly the same as [run] but when a fanout of activities needs to be executed
-/// and returns a `Vec` of results once **all** the activities have been executed.
+/// Works exactly the same as [`run`] but when a fanout of activities needs to be executed
+/// and returns a [`Vec`] of results once **all** the activities have been executed.
 ///
-/// The results in the result `Vec` will come in the exact same order as they appear on
+/// The results in the result [`Vec`] will come in the exact same order as they appear on
 /// the declaration.
 /// All activity return types must have the same return type.
 ///

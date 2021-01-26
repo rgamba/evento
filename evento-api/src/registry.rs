@@ -1,6 +1,7 @@
 use crate::{
     CorrelationId, Operation, OperationExecutor, OperationInput, OperationResult, Workflow,
-    WorkflowContext, WorkflowError, WorkflowFactory, WorkflowId, WorkflowName, WorkflowRegistry,
+    WorkflowContext, WorkflowError, WorkflowErrorType, WorkflowFactory, WorkflowId, WorkflowName,
+    WorkflowRegistry,
 };
 use anyhow::{format_err, Result};
 use serde_json::Value;
@@ -63,6 +64,7 @@ impl SimpleOperationExecutor {
                 Err(WorkflowError {
                     is_retriable: false,
                     error: format!("{:?}", panic_msg),
+                    error_type: WorkflowErrorType::InternalError,
                 })
             }
         }

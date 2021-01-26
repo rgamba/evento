@@ -16,8 +16,8 @@ use thread::JoinHandle;
 
 use crate::{
     state::{OperationExecutionData, State},
-    OperationExecutor, OperationResult, WorkflowData, WorkflowError, WorkflowRunner,
-    WorkflowStatus,
+    OperationExecutor, OperationResult, WorkflowData, WorkflowError, WorkflowErrorType,
+    WorkflowRunner, WorkflowStatus,
 };
 
 lazy_static! {
@@ -128,6 +128,15 @@ fn handle_execution_success(
         log::error!("Unable to store execution result: {:?}", e);
         return;
     }
+    // Run the workflow in order to get next inputs.
+    if let Err(e) = workflow_runner.run(workflow_data) {
+        if let WorkflowErrorType::InternalError = e.error_type {
+            // This is OK, the operation will be retried. All other error types are domain
+            // specific and can be safely ignored.
+            log::error!("Workflow run returned an unexpected result: {:?}", e);
+            return;
+        }
+    }
     if let Err(e) = state.store.dequeue_operation(
         data.workflow_id,
         data.input.operation_name.clone(),
@@ -137,8 +146,6 @@ fn handle_execution_success(
         log::error!("Unable to dequeue operation: {:?}", e);
         return;
     }
-    // Run the workflow in order to get next inputs.
-    workflow_runner.run(workflow_data);
 }
 
 fn handle_execution_failure(state: State, data: OperationExecutionData, error: WorkflowError) {
@@ -149,6 +156,7 @@ fn handle_execution_failure(state: State, data: OperationExecutionData, error: W
         let wf_error = if !error.is_retriable {
             WorkflowError {
                 is_retriable: false,
+                error_type: WorkflowErrorType::OperationExecutionError,
                 error: format!(
                     "operation execution reached the maximum number of retries. error={}",
                     error.error,
@@ -300,6 +308,7 @@ mod test {
                 Err(WorkflowError {
                     error: "test error".to_string(),
                     is_retriable: true,
+                    error_type: WorkflowErrorType::InternalError,
                 })
             });
         let state = create_test_state();

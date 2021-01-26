@@ -116,9 +116,9 @@ impl AsyncWorkflowRunner {
 
     fn run_internal(
         state: State,
-        workflow_data: crate::WorkflowData,
+        workflow_data: WorkflowData,
         workflow_registry: Arc<dyn WorkflowRegistry>,
-    ) -> anyhow::Result<crate::WorkflowStatus, crate::WorkflowError> {
+    ) -> anyhow::Result<WorkflowStatus, WorkflowError> {
         let workflow_data = state
             .store
             .get_workflow(workflow_data.id)?
