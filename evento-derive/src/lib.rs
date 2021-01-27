@@ -25,13 +25,13 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
-            __id: ::evento_api::WorkflowId,
-            __correlation_id: ::evento_api::CorrelationId,
-            __operation_results: Vec<OperationResult>,
+            __id: evento_api::WorkflowId,
+            __correlation_id: evento_api::CorrelationId,
+            __operation_results: Vec<evento_api::OperationResult>,
             __iteration_counter_map: ::std::sync::Mutex<::std::collections::HashMap<String, usize>>,
         }
         impl #struct_name {
-            pub fn new(id: ::evento_api::WorkflowId, correlation_id: ::evento_api::CorrelationId, operation_results: Vec<::evento_api::OperationResult>, #( #fields2 ),*) -> Self
+            pub fn new(id: evento_api::WorkflowId, correlation_id: evento_api::CorrelationId, operation_results: Vec<evento_api::OperationResult>, #( #fields2 ),*) -> Self
             where #context_type: ::serde::Serialize + Clone
             {
                 Self {
@@ -42,7 +42,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
                     __iteration_counter_map: ::std::sync::Mutex::new(::std::collections::HashMap::new()),
                 }
             }
-            fn convert_context(context: &serde_json::Value) -> Result<#context_type> {
+            fn convert_context(context: &serde_json::Value) -> ::anyhow::Result<#context_type> {
                 ::serde_json::from_value(context.clone()).map_err(|e| {
                     ::anyhow::format_err!("Unable to deserialize workflow context: {:?}", e)
                 })
@@ -77,7 +77,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
                 &self,
                 operation_name: String,
                 iteration: usize,
-            ) -> Option<OperationResult> {
+            ) -> Option<evento_api::OperationResult> {
                 self.__operation_results
                     .clone()
                     .into_iter()
@@ -90,8 +90,8 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let factory_ident = syn::Ident::new(factory_name.as_str(), item.span());
     let factory_def = quote! {
         pub struct #factory_ident;
-        impl ::evento_api::WorkflowFactory for #factory_ident {
-            fn create(&self, id: ::evento_api::WorkflowId, correlation_id: ::evento_api::CorrelationId, context: ::evento_api::WorkflowContext, execution_results: Vec<::evento_api::OperationResult>) -> Box<dyn ::evento_api::Workflow> {
+        impl evento_api::WorkflowFactory for #factory_ident {
+            fn create(&self, id: evento_api::WorkflowId, correlation_id: evento_api::CorrelationId, context: evento_api::WorkflowContext, execution_results: Vec<evento_api::OperationResult>) -> Box<dyn evento_api::Workflow> {
                 Box::new(#struct_name::new(
                     id,
                     correlation_id,

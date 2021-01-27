@@ -20,6 +20,7 @@ tokio = { version = "0.2.21", features = ["full", "time"] }
 
 [dev-dependencies]
 mockall = "0.9.0"
+evento-derive = { path = "../evento-derive" }
 
 [build-dependencies]
 rustc_version = "0.3.0"

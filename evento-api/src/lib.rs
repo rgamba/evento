@@ -73,7 +73,7 @@ pub enum WorkflowStatus {
     /// The task needs to wait for external input in order to proceed.
     /// In case the `Option` datetime is provided, the external input must arrive
     /// before that time, otherwise the task will time out.
-    WaitForExternal((OperationInput, Option<DateTime<Utc>>)),
+    WaitForExternal((OperationInput, Option<DateTime<Utc>>, ExternalInputKey)),
     /// Run the next activities in order to proceed with workflow execution.
     RunNext(Vec<OperationInput>),
     /// Unexpected error happened.
@@ -159,6 +159,7 @@ impl From<String> for WorkflowError {
 }
 
 /// Represents a workflow operation to be executed in isolation.
+#[cfg_attr(test, automock)]
 pub trait Operation: Send + Sync {
     /// Returns a result of `Value` containing the execution output in case of success
     /// or a `WorkflowError` in case something went wrong.
@@ -388,14 +389,14 @@ macro_rules! _run_internal {
         if let Some(result) = $self.find_execution_result(operation_name.clone(), iteration) {
             // We already have a result for this execution. Return it
             $self.increase_iteration_counter(&operation_name);
-            ::evento_api::RunResult::Result(result.result::<$result_type>().unwrap())
+            evento_api::RunResult::Result(result.result::<$result_type>().unwrap())
         } else {
             // Operation has no been executed.
             let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
                 .unwrap();
             $self.increase_iteration_counter(&operation_name);
             $op::validate_input(&input).unwrap();
-            ::evento_api::RunResult::Return(input)
+            evento_api::RunResult::Return(input)
         }
     }};
 }
@@ -410,8 +411,8 @@ macro_rules! _run_internal {
 /// # Examples
 ///
 /// ```
-/// # use evento_api::{WorkflowError, WorkflowStatus};
-/// # struct WfTest;
+/// # use evento_api::{WorkflowStatus, WorkflowError, run};
+/// struct WfTest;
 /// # impl WfTest {
 ///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
 /// #       let my_name = "Ricardo".to_string();
@@ -428,10 +429,10 @@ macro_rules! run_all {
 
         $(
             match _run_internal!($self, $op<$result_type>($arg)) {
-                ::evento_api::RunResult::Return(input) => {
+                evento_api::RunResult::Return(input) => {
                     returns.push(input);
                 },
-                ::evento_api::RunResult::Result(r) => {
+                evento_api::RunResult::Result(r) => {
                     results.push(r);
                 }
             }
@@ -470,15 +471,15 @@ macro_rules! run_all {
 ///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
 ///         // This is the key that will be used to identify and complete the wait activity.
 ///         let external_key = Uuid::new_v4();
-///         let approval_signature = wait_for_external!(self, Approval<String>(), external_key, Duration::from_hours(1));
+///         let approval_signature = wait_for_external!(self, Approval<String>(), Duration::from_secs(1000), external_key);
 ///     }
 /// # }
 /// ```
 #[macro_export]
 macro_rules! wait_for_external {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr, $corr_id:expr ) =>  {{
+    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr, $external_key:expr ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
-            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::WaitForExternal((input, Some($timeout)))),
+            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::WaitForExternal((input, Some($timeout), $external_key))),
             $crate::RunResult::Result(r) => r
         }
     }};
@@ -590,7 +591,7 @@ pub mod tests {
                             results.push(self.operation_executor.execute(op)?);
                         }
                     }
-                    Ok(WorkflowStatus::WaitForExternal((input, _))) => {
+                    Ok(WorkflowStatus::WaitForExternal((input, _, _))) => {
                         //TODO: figure out how to pass the external input.
                         results.push(self.operation_executor.execute(input)?);
                     }

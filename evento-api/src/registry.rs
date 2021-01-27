@@ -1,7 +1,7 @@
 use crate::{
-    CorrelationId, Operation, OperationExecutor, OperationInput, OperationResult, Workflow,
-    WorkflowContext, WorkflowError, WorkflowErrorType, WorkflowFactory, WorkflowId, WorkflowName,
-    WorkflowRegistry,
+    CorrelationId, Operation, OperationExecutor, OperationInput, OperationName, OperationResult,
+    Workflow, WorkflowContext, WorkflowError, WorkflowErrorType, WorkflowFactory, WorkflowId,
+    WorkflowName, WorkflowRegistry,
 };
 use anyhow::{format_err, Result};
 use serde_json::Value;
@@ -88,6 +88,20 @@ impl OperationExecutor for SimpleOperationExecutor {
             .unwrap()),
             Err(err) => Err(err),
         }
+    }
+
+    fn validate_external_input(
+        &self,
+        _operation_name: OperationName,
+        _external_input: serde_json::Value,
+    ) -> Result<()> {
+        let operation = self
+            .operation_map
+            .get(input.operation_name.as_str())
+            .unwrap()
+            .clone();
+        //TODO:add
+        //operation.validate_external_input();
     }
 }
 

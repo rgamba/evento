@@ -18,7 +18,7 @@ use thread::JoinHandle;
 
 lazy_static! {
     static ref INFINITE_WAIT: DateTime<Utc> =
-        DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(i64::MAX, 0), Utc);
+        DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(16725225600, 0), Utc);
 }
 
 type WorkflowSender = Sender<(
@@ -82,7 +82,7 @@ impl AsyncWorkflowRunner {
                                         if let Err(e) = result_sender.send(Ok(result.clone())) {
                                             error!("Unable to send result back to caller. result={:?}, error={:?}", result, e);
                                         }
-                                        info!("Successfully ran workflow.");
+                                        log::debug!("Successfully ran workflow.");
                                     }
                                     Err(err) => {
                                         if let Err(e) = result_sender.send(Err(err.clone())) {
@@ -100,7 +100,14 @@ impl AsyncWorkflowRunner {
                     }
                 });
                 if let Err(err) = handle.join() {
-                    error!("Workflow Runner thread panicked: {:?}", err);
+                    if let Some(msg) = err.downcast_ref::<String>() {
+                        error!("Workflow Runner thread panicked: {:?}", msg);
+                    } else {
+                        error!(
+                            "Workflow Runner thread panicked with unexpected error: {:?}",
+                            err
+                        );
+                    }
                     thread::sleep(Duration::from_secs(1));
                 } else {
                     error!("Workflow Runner main thread has stopped");
@@ -136,6 +143,7 @@ impl AsyncWorkflowRunner {
             operation_results,
         )?;
         let result = workflow.run();
+        log::debug!("Ran completed. result={:?}", result);
         match &result {
             Ok(WorkflowStatus::Completed) => {
                 info!("Workflow has been completed. id={}", workflow_data.id);
@@ -181,20 +189,27 @@ impl AsyncWorkflowRunner {
                         .collect(),
                 )?;
             }
-            Ok(WorkflowStatus::WaitForExternal((input, timeout))) => {
+            Ok(WorkflowStatus::WaitForExternal((input, timeout, external_key))) => {
+                let mut ext_input = input.clone();
+                ext_input.external_key = Some(external_key.clone());
                 info!(
                     "Workflow has returned a wait. id={}, input={:?}, timeout={:?}",
-                    workflow_data.id, input, timeout
+                    workflow_data.id, ext_input, timeout
                 );
-                state.store.queue_operation(
-                    OperationExecutionData {
-                        workflow_id: workflow_data.id,
-                        correlation_id: workflow_data.correlation_id.clone(),
-                        retry_count: None,
-                        input: input.clone(),
-                    },
-                    timeout.map_or(*INFINITE_WAIT, |t| t),
-                )?;
+                state
+                    .store
+                    .queue_operation(
+                        OperationExecutionData {
+                            workflow_id: workflow_data.id,
+                            correlation_id: workflow_data.correlation_id.clone(),
+                            retry_count: None,
+                            input: ext_input.clone(),
+                        },
+                        timeout.map_or(*INFINITE_WAIT, |t| t),
+                    )
+                    .map_err(|err| {
+                        format_err!("Error while trying to queue operation. error={:?}", err)
+                    })?;
             }
             Ok(_) => {
                 // All others are a no-op
