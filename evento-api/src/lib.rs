@@ -14,7 +14,8 @@ use chrono::{DateTime, Utc};
 use mockall::automock;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// Unique identifier for a workflow definition. Must be unique
@@ -178,10 +179,14 @@ pub trait Operation: Send + Sync {
     /// Returns an error in case the input is not valid for this operation.
     ///
     /// In case this operation returns an error, it typically means this is a programming error,
-    /// or data corruption. It's OK to panic.
+    /// or data corruption.
     fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized;
+
+    fn validate_external_input(&self, input: serde_json::Value) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -395,7 +400,12 @@ macro_rules! _run_internal {
             let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
                 .unwrap();
             $self.increase_iteration_counter(&operation_name);
-            $op::validate_input(&input).unwrap();
+            if let Err(e) = $op::validate_input(&input) {
+                panic!(format!(
+                    "Invalid input format for operation {}: {}",
+                    operation_name, e
+                ));
+            }
             evento_api::RunResult::Return(input)
         }
     }};
@@ -499,6 +509,56 @@ macro_rules! parse_input {
             ::anyhow::format_err!("Unable to cast input value to '{}'", stringify!($type))
         })?;
     };
+}
+
+pub struct WorkflowInnerState {
+    id: WorkflowId,
+    correlation_id: CorrelationId,
+    operation_results: Vec<OperationResult>,
+    iteration_counter_map: Mutex<HashMap<String, usize>>,
+}
+
+impl WorkflowInnerState {
+    pub fn new(
+        id: WorkflowId,
+        correlation_id: CorrelationId,
+        operation_results: Vec<OperationResult>,
+    ) -> Self {
+        Self {
+            id,
+            correlation_id,
+            operation_results,
+            iteration_counter_map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn increase_iteration_counter(&self, operation_name: &String) {
+        let mut guard = self.iteration_counter_map.lock().unwrap();
+        let count = {
+            if let Some(c) = guard.get(operation_name.as_str()) {
+                c.clone()
+            } else {
+                0
+            }
+        };
+        guard.insert(operation_name.clone(), count + 1);
+    }
+
+    pub fn iteration_counter(&self, operation_name: &String) -> usize {
+        let mut guard = self.iteration_counter_map.lock().unwrap();
+        guard.get(operation_name.as_str()).map_or(0, |v| v.clone())
+    }
+
+    pub fn find_execution_result(
+        &self,
+        operation_name: String,
+        iteration: usize,
+    ) -> Option<evento_api::OperationResult> {
+        self.operation_results
+            .clone()
+            .into_iter()
+            .find(|r| r.operation_name == operation_name && r.iteration == iteration)
+    }
 }
 
 pub mod tests {

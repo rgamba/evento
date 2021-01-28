@@ -92,16 +92,15 @@ impl OperationExecutor for SimpleOperationExecutor {
 
     fn validate_external_input(
         &self,
-        _operation_name: OperationName,
-        _external_input: serde_json::Value,
+        operation_name: OperationName,
+        external_input: serde_json::Value,
     ) -> Result<()> {
         let operation = self
             .operation_map
-            .get(input.operation_name.as_str())
+            .get(operation_name.as_str())
             .unwrap()
             .clone();
-        //TODO:add
-        //operation.validate_external_input();
+        operation.validate_external_input(external_input)
     }
 }
 

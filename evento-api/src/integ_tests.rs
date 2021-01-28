@@ -8,7 +8,7 @@ use crate::{
     run, wait_for_external, MockOperation, Operation, OperationInput, Workflow, WorkflowError,
     WorkflowFactory, WorkflowStatus,
 };
-use anyhow::Result;
+use anyhow::{format_err, Result};
 use chrono::Utc;
 use evento_derive::workflow;
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 #[test]
 fn integration_tests() {
-    env_logger::init();
+    env_logger::try_init();
 
     let state = State {
         store: Arc::new(InMemoryStore::new()),
@@ -66,7 +66,7 @@ struct SimpleWorkflow {
 
 impl Workflow for SimpleWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run!(self, A<bool>(true));
+        run!(self, A<bool>(1));
         run!(self, A<bool>(true));
         run!(self, A<bool>(true));
         Ok(WorkflowStatus::Completed)
@@ -104,6 +104,8 @@ impl Operation for A {
     where
         Self: Sized,
     {
-        Ok(())
+        serde_json::from_value::<String>(input.input.clone())
+            .map(|_| ())
+            .map_err(|e| format_err!("{:?}", e))
     }
 }

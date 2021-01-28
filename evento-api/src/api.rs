@@ -127,6 +127,7 @@ impl WorkflowFacade {
                 );
                 format_err!("{:?}", err)
             })?;
+        log::info!("Completed external operation with key={}", external_key);
         Ok(())
     }
 
