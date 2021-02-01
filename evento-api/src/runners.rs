@@ -152,6 +152,7 @@ impl AsyncWorkflowRunner {
                 workflow_data.id,
             ))?;
         let operation_results = state.store.get_operation_results(workflow_data.id)?;
+        log::debug!("Running workflow with results={:?}", operation_results);
         let workflow = workflow_registry.create_workflow(
             workflow_data.name.clone(),
             workflow_data.id,
@@ -249,6 +250,7 @@ impl AsyncWorkflowRunner {
     pub fn stop(&self) -> Result<()> {
         log::info!("Stopping runner");
         self.stop_state.store(1, Ordering::SeqCst);
+        // TODO:we should be able to send a None workflow data to signal a stop
         self.run(WorkflowData {
             id: Uuid::nil(),
             name: "".to_string(),

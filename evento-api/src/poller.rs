@@ -229,7 +229,9 @@ fn handle_execution_failure(state: State, data: OperationExecutionData, error: W
             log::error!("Unable to store execution result: {:?}", e);
             return;
         }
-        if let Err(e) = state.store.queue_operation(data.clone(), new_run_date) {
+        let mut new_data = data.clone();
+        new_data.retry_count = Some(count + 1);
+        if let Err(e) = state.store.queue_operation(new_data, new_run_date) {
             // This is a recoverable scenario, operation will be fetched again shortly and executed again.
             log::error!(
                 "Unable to re-queue the failed operation. workflow_id={}, error={:?}",

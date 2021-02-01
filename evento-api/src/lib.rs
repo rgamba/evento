@@ -241,7 +241,8 @@ impl OperationResult {
     }
 
     pub fn result<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_value(self.result.clone()).map_err(|err| format_err!("{:?}", err))
+        serde_json::from_value(self.result.clone())
+            .map_err(|err| format_err!("Unable to convert result: {:?}", err))
     }
 }
 
@@ -405,7 +406,11 @@ macro_rules! _run_internal {
         {
             // We already have a result for this execution. Return it
             $self.__state.increase_iteration_counter(&operation_name);
-            evento_api::RunResult::Result(result.result::<$result_type>().unwrap())
+            evento_api::RunResult::Result(
+                result
+                    .result::<$result_type>()
+                    .map_err(|e| WorkflowError::internal_error(format!("{:?}", e)))?,
+            )
         } else {
             // Operation has no been executed.
             let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
@@ -500,7 +505,7 @@ macro_rules! operation_ok {
 
 #[macro_export]
 macro_rules! parse_input {
-    ($input:ident, $type:ident) => {
+    ($input:ident, $type:ty) => {
         $input.value::<$type>().map_err(|err| {
             ::anyhow::format_err!("Unable to cast input value to '{}'", stringify!($type))
         })?;

@@ -227,10 +227,15 @@ impl Store for InMemoryStore {
             .filter(|(_, run_date, state)| {
                 (*state == Self::QUEUED || *state == Self::RETRY) && current_now.gt(run_date)
             })
-            .map(|(data, _, state)| {
+            .map(|(data, next_run_date, state)| {
                 let copy = data.clone();
                 *state = Self::RETRY;
                 data.retry_count = Some(data.retry_count.unwrap_or(0) + 1);
+                // Give the caller some time to execute and requeue/dequeue the task, otherwise
+                // it needs to be delivered to guarantee at least once execution.
+                *next_run_date = next_run_date
+                    .checked_add_signed(chrono::Duration::seconds(5))
+                    .unwrap();
                 copy
             })
             .collect())
@@ -251,14 +256,14 @@ impl Store for InMemoryStore {
             .map(|(ref mut data, run_date, state)| {
                 *state = Self::QUEUED;
                 data.input.external_input = Some(external_input_payload.clone());
-                *run_date = Utc::now(); // TODO: this should be now+safe retry interval
+                *run_date = Utc::now(); // Queue this for immediate execution
                 data.clone()
             })
             .ok_or(format_err!(
                 "Unable to find operation with external key provided"
             ))?;
         //TODO: somehow verify that the external input payload is correct and statically type it.
-        self.store_execution_result(
+        /*self.store_execution_result(
             data.workflow_id,
             data.input.operation_name.clone(),
             Ok(OperationResult::new_from_value(
@@ -266,7 +271,7 @@ impl Store for InMemoryStore {
                 data.input.iteration,
                 data.input.operation_name.clone(),
             )),
-        )?;
+        )?;*/
         Ok(data)
     }
 

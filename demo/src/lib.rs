@@ -32,7 +32,7 @@ impl Workflow for TestWorkflow {
         let external_key = Uuid::new_v4();
         log::info!("External key for wait: {}", external_key);
         let filtered =
-            wait_for_external!(self, WaitAndFilterUsers<Vec<String>>(users), timeout, external_key);
+            wait_for_external!(self, WaitAndFilterUsers<Vec<User>>(users), timeout, external_key);
         run!(self, StoreResult<bool>(filtered));
         Ok((WorkflowStatus::Completed))
     }
@@ -94,13 +94,18 @@ fn test_fetch() {
 pub struct WaitAndFilterUsers;
 impl Operation for WaitAndFilterUsers {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        //TODO: workflow is reaching this line when
         if input.external_input.is_none() {
             return Err(WorkflowError::non_retriable_domain_error(
                 "Expected external input not present!".to_string(),
             ));
         }
-        Ok(input.external_input.clone().unwrap())
+        let users = parse_input!(input, Vec<User>);
+        let age: u64 = serde_json::from_value(input.external_input.unwrap()).unwrap();
+        let result = users
+            .into_iter()
+            .filter(|u| u.employee_age >= age)
+            .collect::<Vec<User>>();
+        Ok(serde_json::to_value(result).unwrap())
     }
 
     fn name(&self) -> &str {
@@ -115,21 +120,26 @@ impl Operation for WaitAndFilterUsers {
     }
 }
 
-struct StoreResult;
+pub struct StoreResult;
 impl Operation for StoreResult {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        unimplemented!()
+        let users = parse_input!(input, Vec<User>);
+        println!("The final result:");
+        for u in users {
+            println!("User: {:?}", u);
+        }
+        Ok(serde_json::Value::Bool(true))
     }
 
     fn name(&self) -> &str {
-        unimplemented!()
+        "StoreResult"
     }
 
     fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized,
     {
-        unimplemented!()
+        Ok(())
     }
 }
 
