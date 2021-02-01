@@ -1,4 +1,4 @@
-use crate::poller::start_polling;
+use crate::poller::Poller;
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
     OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
@@ -9,6 +9,7 @@ use anyhow::{format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use std::sync::Arc;
+use uuid::Uuid;
 
 lazy_static! {
     static ref INFINITE_WAIT: DateTime<Utc> =
@@ -16,11 +17,13 @@ lazy_static! {
 }
 
 /// WorkflowFacade is the public interface to the workflow engine.
+#[derive(Clone)]
 pub struct WorkflowFacade {
     workflow_registry: Arc<dyn WorkflowRegistry>,
     operation_executor: Arc<dyn OperationExecutor>,
     workflow_runner: Arc<dyn WorkflowRunner>,
     state: State,
+    poller: Poller,
 }
 
 impl WorkflowFacade {
@@ -30,7 +33,7 @@ impl WorkflowFacade {
         operation_executor: Arc<dyn OperationExecutor>,
         workflow_runner: Arc<dyn WorkflowRunner>,
     ) -> Self {
-        start_polling(
+        let poller = Poller::start_polling(
             state.clone(),
             operation_executor.clone(),
             workflow_runner.clone(),
@@ -40,6 +43,7 @@ impl WorkflowFacade {
             workflow_runner,
             state,
             operation_executor,
+            poller,
         }
     }
 
@@ -54,11 +58,11 @@ impl WorkflowFacade {
     pub fn create_workflow(
         &self,
         workflow_name: WorkflowName,
-        workflow_id: WorkflowId,
         correlation_id: CorrelationId,
         context: WorkflowContext,
-    ) -> Result<()> {
-        self.state.store.create_workflow(
+    ) -> Result<WorkflowData> {
+        let workflow_id = Uuid::new_v4();
+        let wf_data = self.state.store.create_workflow(
             workflow_name.clone(),
             workflow_id,
             correlation_id.clone(),
@@ -75,7 +79,7 @@ impl WorkflowFacade {
             })
             //TODO: in case of error, we'll end up having a zombie workflow, figure out how to fix.
             .map_err(|err| format_err!("{:?}", err))?;
-        Ok(())
+        Ok(wf_data)
     }
 
     /// Completes an external wait activity for a workflow.
@@ -207,5 +211,9 @@ impl WorkflowFacade {
     /// - `workflow_id` - The workflow ID    
     pub fn cancel_workflow(&self, _workflow_id: WorkflowId) -> Result<WorkflowData> {
         unimplemented!()
+    }
+
+    pub fn stop(&self) -> Result<()> {
+        self.poller.stop_polling()
     }
 }

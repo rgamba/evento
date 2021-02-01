@@ -39,17 +39,21 @@ fn integration_tests() {
     operation_map.insert("A".to_string(), Arc::new(operation_a));
     let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    let facade = WorkflowFacade::new(state.clone(), registry.clone(), executor.clone(), runner);
+    let facade = WorkflowFacade::new(
+        state.clone(),
+        registry.clone(),
+        executor.clone(),
+        runner.clone(),
+    );
 
-    let wf_id = Uuid::new_v4();
-    facade
+    let wf_id = facade
         .create_workflow(
             "WaitWorkflow".to_string(),
-            wf_id,
             "test".to_string(),
             serde_json::to_value("test".to_string()).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     let wf = facade.get_workflow_by_id(wf_id).unwrap().unwrap();
     thread::sleep(Duration::from_secs(3));
     facade
@@ -57,6 +61,8 @@ fn integration_tests() {
         .unwrap();
 
     wait_for_workflow_to_complete(wf_id, state.clone(), Duration::from_secs(5)).unwrap();
+    runner.stop().unwrap();
+    facade.stop().unwrap();
 }
 
 #[workflow]
@@ -66,7 +72,7 @@ struct SimpleWorkflow {
 
 impl Workflow for SimpleWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run!(self, A<bool>(1));
+        run!(self, A<bool>(true));
         run!(self, A<bool>(true));
         run!(self, A<bool>(true));
         Ok(WorkflowStatus::Completed)
@@ -104,7 +110,7 @@ impl Operation for A {
     where
         Self: Sized,
     {
-        serde_json::from_value::<String>(input.input.clone())
+        serde_json::from_value::<bool>(input.input.clone())
             .map(|_| ())
             .map_err(|e| format_err!("{:?}", e))
     }

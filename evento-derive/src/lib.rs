@@ -25,21 +25,15 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
-            __id: evento_api::WorkflowId,
-            __correlation_id: evento_api::CorrelationId,
-            __operation_results: Vec<evento_api::OperationResult>,
-            __iteration_counter_map: ::std::sync::Mutex<::std::collections::HashMap<String, usize>>,
+            pub __state: evento_api::WorkflowInnerState,
         }
         impl #struct_name {
             pub fn new(id: evento_api::WorkflowId, correlation_id: evento_api::CorrelationId, operation_results: Vec<evento_api::OperationResult>, #( #fields2 ),*) -> Self
             where #context_type: ::serde::Serialize + Clone
             {
                 Self {
-                    __id: id,
-                    __correlation_id: correlation_id,
-                    __operation_results: operation_results,
+                    __state: evento_api::WorkflowInnerState::new(id, correlation_id, operation_results),
                     #( #fields_names, )*
-                    __iteration_counter_map: ::std::sync::Mutex::new(::std::collections::HashMap::new()),
                 }
             }
             fn convert_context(context: &serde_json::Value) -> ::anyhow::Result<#context_type> {
@@ -50,38 +44,11 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
             fn context(&self) -> #context_type {
                 self.context.clone()
             }
-            fn increase_iteration_counter(&self, operation_name: &String) {
-                let mut guard = self.__iteration_counter_map.lock().unwrap();
-                let count = {
-                    if let Some(c) = guard.get(operation_name.as_str()) {
-                        c.clone()
-                    } else {
-                        0
-                    }
-                };
-                guard.insert(operation_name.clone(), count + 1);
-            }
-            pub fn id(&self) -> ::uuid::Uuid {
-                self.__id.clone()
+            pub fn id(&self) -> evento_api::WorkflowId {
+                self.__state.id
             }
             pub fn name(&self) -> String {
                 String::from(#workflow_name)
-            }
-            fn iteration_counter(&self, operation_name: &String) -> usize {
-                let mut guard = self.__iteration_counter_map.lock().unwrap();
-                guard
-                    .get(operation_name.as_str())
-                    .map_or(0, |v| v.clone())
-            }
-            fn find_execution_result(
-                &self,
-                operation_name: String,
-                iteration: usize,
-            ) -> Option<evento_api::OperationResult> {
-                self.__operation_results
-                    .clone()
-                    .into_iter()
-                    .find(|r| r.operation_name == operation_name && r.iteration == iteration)
             }
         }
     };

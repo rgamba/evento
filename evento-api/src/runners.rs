@@ -2,10 +2,11 @@ use crate::{
     state::{OperationExecutionData, State},
     WorkflowData, WorkflowError, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
 };
-use anyhow::{format_err, Result};
+use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use log::{error, info, warn};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender},
@@ -15,6 +16,7 @@ use std::{
     time::Duration,
 };
 use thread::JoinHandle;
+use uuid::Uuid;
 
 lazy_static! {
     static ref INFINITE_WAIT: DateTime<Utc> =
@@ -40,6 +42,7 @@ pub struct AsyncWorkflowRunner {
     _workflow_registry: Arc<dyn WorkflowRegistry>,
     _handle: JoinHandle<()>,
     sender: Arc<Mutex<WorkflowSender>>,
+    stop_state: Arc<AtomicU8>, // 0=dont stop, 1=stopping, 2=stopped
 }
 
 impl WorkflowRunner for AsyncWorkflowRunner {
@@ -56,21 +59,30 @@ impl WorkflowRunner for AsyncWorkflowRunner {
 
 impl AsyncWorkflowRunner {
     pub fn new(state: State, workflow_registry: Arc<dyn WorkflowRegistry>) -> Self {
+        let stop = Arc::new(AtomicU8::new(0));
+        let stop_clone = stop.clone();
         let (sender, receiver): (WorkflowSender, WorkflowReceiver) = mpsc::channel();
         let state_clone = state.clone();
         let registry_clone = workflow_registry.clone();
         let rx = Arc::new(Mutex::new(receiver));
         let main_handle = thread::spawn(move || {
             let receiver_clone = rx.clone();
-            loop {
+            let stop_clone_clone = stop_clone.clone();
+            while stop_clone_clone.load(Ordering::SeqCst) == 0 {
                 // Main loop - in case the runner thread crashes, we can restart and we don't block the main thread.
                 let another_state_clone = state_clone.clone();
                 let another_registry_clone = registry_clone.clone();
                 let another_rx_clone = receiver_clone.clone();
+                let stop_clone_clone_clone = stop_clone_clone.clone();
                 let handle = thread::spawn(move || {
                     // Runner loop thread
-                    loop {
-                        match another_rx_clone.lock().unwrap().recv() {
+                    while stop_clone_clone_clone.load(Ordering::SeqCst) == 0 {
+                        let recv = {
+                            // Get and release the lock immediately, otherwise it could end up being
+                            // poisoned if the runner panics.
+                            another_rx_clone.lock().unwrap().recv()
+                        };
+                        match recv {
                             Ok((data, result_sender)) => {
                                 info!("New request to process: {:?}", data);
                                 match Self::run_internal(
@@ -102,6 +114,8 @@ impl AsyncWorkflowRunner {
                 if let Err(err) = handle.join() {
                     if let Some(msg) = err.downcast_ref::<String>() {
                         error!("Workflow Runner thread panicked: {:?}", msg);
+                    } else if let Some(msg) = err.downcast_ref::<&str>() {
+                        error!("Workflow Runner thread panicked: {:?}", msg);
                     } else {
                         error!(
                             "Workflow Runner thread panicked with unexpected error: {:?}",
@@ -113,15 +127,18 @@ impl AsyncWorkflowRunner {
                     error!("Workflow Runner main thread has stopped");
                 }
             }
+            stop_clone.store(2, Ordering::SeqCst);
         });
         Self {
             _state: state.clone(),
             _handle: main_handle,
             sender: Arc::new(Mutex::new(sender)),
             _workflow_registry: workflow_registry,
+            stop_state: stop,
         }
     }
 
+    //TODO: this method should be ran on a separate thread to avoid poisoning the runner thread's receiver lock.
     fn run_internal(
         state: State,
         workflow_data: WorkflowData,
@@ -228,6 +245,26 @@ impl AsyncWorkflowRunner {
         }
         result
     }
+
+    pub fn stop(&self) -> Result<()> {
+        log::info!("Stopping runner");
+        self.stop_state.store(1, Ordering::SeqCst);
+        self.run(WorkflowData {
+            id: Uuid::nil(),
+            name: "".to_string(),
+            correlation_id: "".to_string(),
+            status: WorkflowStatus::Created,
+            created_at: Utc::now(),
+            context: serde_json::Value::Null,
+        });
+        for i in 0..1000 {
+            if self.stop_state.load(Ordering::SeqCst) == 2 {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        bail!("Runner thread did not stop")
+    }
 }
 
 #[cfg(test)]
@@ -240,7 +277,7 @@ pub mod tests {
     use crate::{registry::SimpleWorkflowRegistry, state::tests::create_test_state, Workflow};
 
     #[test]
-    fn test_runner() {
+    fn test_runner_ok() {
         let wf_id = Uuid::new_v4();
         let wf_name = "test".to_string();
         let corr_id = "123".to_string();
@@ -270,6 +307,41 @@ pub mod tests {
             .unwrap();
         assert!(matches!(result, WorkflowStatus::Completed));
         wait_for_workflow_to_complete(wf_id, state.clone(), Duration::from_secs(3)).unwrap();
+        runner.stop().unwrap();
+    }
+
+    #[test]
+    fn test_runner_when_execution_panics() {
+        let wf_id = Uuid::new_v4();
+        let wf_name = "test".to_string();
+        let corr_id = "123".to_string();
+        let wf_context = serde_json::Value::String("test".to_string());
+
+        let mut factory = MockWorkflowFactory::new();
+        factory.expect_create().return_once(move |_, _, _, _| {
+            panic!("something failed");
+        });
+
+        let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
+        factories.insert(wf_name.clone(), Arc::new(factory));
+        let registry = SimpleWorkflowRegistry::new(factories);
+        let state = create_test_state();
+        state
+            .store
+            .create_workflow(wf_name.clone(), wf_id, corr_id.clone(), wf_context)
+            .unwrap();
+        let runner = AsyncWorkflowRunner::new(state.clone(), Arc::new(registry));
+
+        let result = runner.run(WorkflowData {
+            id: wf_id,
+            name: wf_name.clone(),
+            correlation_id: "test".to_string(),
+            status: WorkflowStatus::Created,
+            created_at: Utc::now(),
+            context: serde_json::Value::String("test".to_string()),
+        });
+        assert!(result.is_err());
+        runner.stop().unwrap();
     }
 
     fn create_test_workflow_factory(

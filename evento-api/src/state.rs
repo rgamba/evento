@@ -20,7 +20,7 @@ pub trait Store: Send + Sync {
         workflow_id: WorkflowId,
         correlation_id: CorrelationId,
         context: WorkflowContext,
-    ) -> Result<()>;
+    ) -> Result<WorkflowData>;
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>>;
 
@@ -141,17 +141,18 @@ impl Store for InMemoryStore {
         workflow_id: WorkflowId,
         correlation_id: CorrelationId,
         context: WorkflowContext,
-    ) -> Result<()> {
+    ) -> Result<WorkflowData> {
         let mut guard = self.workflows.lock().unwrap();
-        guard.push(WorkflowData {
+        let data = WorkflowData {
             id: workflow_id,
             name: workflow_name,
             correlation_id,
             status: WorkflowStatus::Created,
             created_at: Utc::now(),
             context,
-        });
-        Ok(())
+        };
+        guard.push(data.clone());
+        Ok(data)
     }
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>> {

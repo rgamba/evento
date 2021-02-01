@@ -8,13 +8,18 @@ pub mod registry;
 pub mod runners;
 pub mod state;
 
+use actix_web::http::StatusCode;
+use actix_web::{HttpResponse, ResponseError};
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use mockall::automock;
 use serde::de::DeserializeOwned;
+use serde::export::Formatter;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fmt;
+use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -51,7 +56,7 @@ pub trait WorkflowFactory: Send + Sync {
     ) -> Box<dyn Workflow>;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct WorkflowData {
     pub id: WorkflowId,
     pub name: String,
@@ -62,7 +67,7 @@ pub struct WorkflowData {
 }
 
 /// Represents the status of a Workflow at a given point in time of the execution.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum WorkflowStatus {
     /// Workflow has just been created and has not been executed for the first time yet.
     Created,
@@ -85,14 +90,26 @@ pub enum WorkflowStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkflowError {
     pub is_retriable: bool,
     pub error: String,
     pub error_type: WorkflowErrorType,
 }
 
-#[derive(Debug, Clone)]
+impl ResponseError for WorkflowError {
+    fn error_response(&self) -> HttpResponse {
+        HttpResponse::InternalServerError().json::<WorkflowError>(self.clone())
+    }
+}
+
+impl Display for WorkflowError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum WorkflowErrorType {
     DomainError,
     InternalError,
@@ -100,7 +117,7 @@ pub enum WorkflowErrorType {
 }
 
 impl WorkflowError {
-    fn internal_error(error: String) -> Self {
+    pub fn internal_error(error: String) -> Self {
         Self {
             is_retriable: true,
             error_type: WorkflowErrorType::InternalError,
@@ -108,7 +125,7 @@ impl WorkflowError {
         }
     }
 
-    fn retriable_domain_error(error: String) -> Self {
+    pub fn retriable_domain_error(error: String) -> Self {
         Self {
             is_retriable: true,
             error_type: WorkflowErrorType::DomainError,
@@ -116,7 +133,7 @@ impl WorkflowError {
         }
     }
 
-    fn non_retriable_domain_error(error: String) -> Self {
+    pub fn non_retriable_domain_error(error: String) -> Self {
         Self {
             is_retriable: false,
             error_type: WorkflowErrorType::DomainError,
@@ -230,7 +247,7 @@ impl OperationResult {
 
 /// This is the data that will be persisted in order to execute the operation at some
 /// point in the future.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OperationInput {
     pub operation_name: String,
     pub workflow_name: String,
@@ -242,7 +259,7 @@ pub struct OperationInput {
     input: serde_json::Value,
     /// This value will only be present for external operation inputs after input has been provided from
     /// the external source.
-    external_input: Option<serde_json::Value>,
+    pub external_input: Option<serde_json::Value>,
 }
 
 impl OperationInput {
@@ -362,21 +379,12 @@ pub enum RunResult<T> {
 ///
 /// # Examples
 ///
-/// ```
-/// # use evento_api::{WorkflowError, WorkflowStatus};
-/// # struct WfTest;
-/// # impl WfTest {
-///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-/// #       let my_name = "Ricardo".to_string();
-///         // This reads: run `GreetOperation` operation with `my_name` as input parameter
-///         // and I expect to get a `String` as result.
-///         let result = run!(self, GreetOperation<String>(my_name));
-///     }
-/// # }
+/// ```ignore
+/// let result: String = run!(self, GreetOperation<String>(my_name));
 /// ```
 #[macro_export]
 macro_rules! run {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) =>  {{
+    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
             $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::RunNext(vec![input])),
             $crate::RunResult::Result(r) => r
@@ -386,20 +394,23 @@ macro_rules! run {
 
 #[macro_export]
 macro_rules! _run_internal {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr) ) => {{
+    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) => {{
         let operation_name = stringify!($op).to_string();
-        let iteration = $self.iteration_counter(&operation_name);
+        let iteration = $self.__state.iteration_counter(&operation_name);
         let workflow_name = $self.name();
 
-        if let Some(result) = $self.find_execution_result(operation_name.clone(), iteration) {
+        if let Some(result) = $self
+            .__state
+            .find_execution_result(operation_name.clone(), iteration)
+        {
             // We already have a result for this execution. Return it
-            $self.increase_iteration_counter(&operation_name);
+            $self.__state.increase_iteration_counter(&operation_name);
             evento_api::RunResult::Result(result.result::<$result_type>().unwrap())
         } else {
             // Operation has no been executed.
             let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
                 .unwrap();
-            $self.increase_iteration_counter(&operation_name);
+            $self.__state.increase_iteration_counter(&operation_name);
             if let Err(e) = $op::validate_input(&input) {
                 panic!(format!(
                     "Invalid input format for operation {}: {}",
@@ -420,20 +431,12 @@ macro_rules! _run_internal {
 ///
 /// # Examples
 ///
-/// ```
-/// # use evento_api::{WorkflowStatus, WorkflowError, run};
-/// struct WfTest;
-/// # impl WfTest {
-///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-/// #       let my_name = "Ricardo".to_string();
-/// #       let other_name = "Jose".to_string();
-///         let results = run!(self, GreetOperation<String>(my_name), GreetOperation<String>(other_name));
-///     }
-/// # }
+/// ```ignore
+/// let results: Vec<String> = run_all!(self, GreetOperation<String>(my_name), GreetOperation<String>(other_name));
 /// ```
 #[macro_export]
 macro_rules! run_all {
-    ( $self:ident, $( $op:ident <$result_type:ident> ($arg:expr) ),+ $(,)* ) =>  {{
+    ( $self:ident, $( $op:ident <$result_type:ty> ($arg:expr) ),+ $(,)* ) =>  {{
         let mut results = Vec::new();
         let mut returns = Vec::new();
 
@@ -473,21 +476,14 @@ macro_rules! run_all {
 ///
 /// # Examples
 ///
-/// ```
-/// # use evento_api::{WorkflowError, WorkflowStatus};
-/// # use uuid::Uuid;
-/// # struct WfTest;
-/// # impl WfTest {
-///     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-///         // This is the key that will be used to identify and complete the wait activity.
-///         let external_key = Uuid::new_v4();
-///         let approval_signature = wait_for_external!(self, Approval<String>(), Duration::from_secs(1000), external_key);
-///     }
-/// # }
+/// ```ignore
+/// // This is the key that will be used to identify and complete the wait activity.
+/// let external_key = Uuid::new_v4();
+/// let approval_signature = wait_for_external!(self, Approval<String>(true), Utc::now(), external_key);
 /// ```
 #[macro_export]
 macro_rules! wait_for_external {
-    ( $self:ident, $op:ident <$result_type:ident> ($arg:expr), $timeout:expr, $external_key:expr ) =>  {{
+    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr), $timeout:expr, $external_key:expr ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
             $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::WaitForExternal((input, Some($timeout), $external_key))),
             $crate::RunResult::Result(r) => r
@@ -512,10 +508,10 @@ macro_rules! parse_input {
 }
 
 pub struct WorkflowInnerState {
-    id: WorkflowId,
-    correlation_id: CorrelationId,
-    operation_results: Vec<OperationResult>,
-    iteration_counter_map: Mutex<HashMap<String, usize>>,
+    pub id: WorkflowId,
+    pub correlation_id: CorrelationId,
+    pub operation_results: Vec<OperationResult>,
+    pub iteration_counter_map: Mutex<HashMap<String, usize>>,
 }
 
 impl WorkflowInnerState {
@@ -553,7 +549,7 @@ impl WorkflowInnerState {
         &self,
         operation_name: String,
         iteration: usize,
-    ) -> Option<evento_api::OperationResult> {
+    ) -> Option<OperationResult> {
         self.operation_results
             .clone()
             .into_iter()

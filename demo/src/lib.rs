@@ -1,177 +1,143 @@
+use actix_web::rt::blocking::run;
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use evento_api::{
-    operation_ok, parse_input, run, wait_for_external, Operation, OperationInput, OperationResult,
-    Workflow, WorkflowError, WorkflowStatus,
+    parse_input, run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError,
+    WorkflowStatus,
 };
 use evento_derive::workflow;
+use log;
+use reqwest;
 use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ProposalApprovalWorkflowContext {
-    pub operation_type: OperationType,
-    pub body: serde_json::Value,
-}
+use std::collections::HashMap;
+use uuid::Uuid;
 
 #[workflow]
-pub struct ProposalApprovalWorkflow {
-    context: ProposalApprovalWorkflowContext,
+pub struct TestWorkflow {
+    context: TestContext,
 }
 
-impl Workflow for ProposalApprovalWorkflow {
+impl Workflow for TestWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        let proposal: Proposal = run!(self, GenerateProposal<Proposal>(ProposalInput{
-            operation_type: self.context.operation_type.clone(),
-            body: self.context.body.clone(),
-        }));
-        run!(self, NotifyApprovers<bool>(proposal.clone()));
-        let mut approval_count = 0;
-        while approval_count < self.required_approvals(&proposal) {
-            approval_count = match wait_for_external!(self, ProcessApproval<ProcessApprovalResult>(proposal.clone()), self.proposal_expiration(&proposal), proposal.id)
-            {
-                ProcessApprovalResult::Ok(new_count) => new_count,
-                ProcessApprovalResult::Declined(reason) => {
-                    return Ok(WorkflowStatus::CompletedWithError(
-                        format!("Proposal declined: {}", reason).into(),
-                    ));
-                }
-            };
+        let users = run!(self, FetchUsers<Vec<User>>(self.context.keyword.clone()));
+        log::debug!("GOT USERS: {:?}", users);
+        if users.is_empty() {
+            return Err(WorkflowError::non_retriable_domain_error(
+                "No users found".to_string(),
+            ));
         }
-        /*match proposal.operation_type {
-            OperationType::Mint => {
-                wait_for_external!(self, WaitForFiatReceived<_>(proposal.clone()));
-            }
-            OperationType::Burn => {
-                wait_for_external!(self, WaitForReserveOutToDD<_>(proposal.clone()));
-            }
-        };
-        run!(self, GenerateTxn<_>(proposal.clone()));*/
-        Ok(WorkflowStatus::Completed)
+        let timeout = Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(30))
+            .unwrap();
+        let external_key = Uuid::new_v4();
+        log::info!("External key for wait: {}", external_key);
+        let filtered =
+            wait_for_external!(self, WaitAndFilterUsers<Vec<String>>(users), timeout, external_key);
+        run!(self, StoreResult<bool>(filtered));
+        Ok((WorkflowStatus::Completed))
     }
 }
 
-impl ProposalApprovalWorkflow {
-    fn required_approvals(&self, _proposal: &Proposal) -> usize {
-        return 3;
-    }
-
-    fn proposal_expiration(&self, _proposal: &Proposal) -> DateTime<Utc> {
-        Utc::now()
-    }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TestContext {
+    pub keyword: String,
+    pub age_filter: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum OperationType {
-    Mint,
-    Burn,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Proposal {
-    pub operation_type: OperationType,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-pub struct ProposalInput {
-    pub operation_type: OperationType,
-    pub body: serde_json::Value,
-}
-
-pub struct GenerateProposal;
-impl Operation for GenerateProposal {
-    fn name(&self) -> &str {
-        "GenerateProposal"
-    }
-
+pub struct FetchUsers;
+impl Operation for FetchUsers {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        let new_input = parse_input!(input, ProposalInput);
-        operation_ok!(Proposal {
-            operation_type: new_input.operation_type,
-        })
+        let keyword = parse_input!(input, String);
+        let body: serde_json::Value =
+            reqwest::blocking::get("http://dummy.restapiexample.com/api/v1/employees")
+                .map_err(|e| WorkflowError::retriable_domain_error(format!("{:?}", e)))?
+                .json()
+                .map_err(|e| WorkflowError::retriable_domain_error(format!("{:?}", e)))?;
+        let results: Vec<User> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect();
+        let v = serde_json::to_value(results).unwrap();
+        Ok(v)
+    }
+
+    fn name(&self) -> &str {
+        "FetchUsers"
     }
 
     fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized,
     {
-        input.value::<ProposalInput>().map(|_| ())
+        input.value::<String>().map(|_| ())
     }
 }
 
-pub struct NotifyApprovers {}
-impl Operation for NotifyApprovers {
-    fn name(&self) -> &str {
-        "NotifyApprovers"
-    }
-
-    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        operation_ok!(true)
-    }
-
-    fn validate_input(input: &OperationInput) -> Result<()> {
-        input.value::<Proposal>().map(|_| ())
-    }
+#[test]
+fn test_fetch() {
+    let fetch = FetchUsers {};
+    let result = fetch
+        .execute(
+            OperationInput::new(
+                "".to_string(),
+                "".to_string(),
+                1,
+                serde_json::Value::String("test".to_string()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
 }
 
-pub struct ProcessApproval;
-impl Operation for ProcessApproval {
-    fn name(&self) -> &str {
-        "ProcessApproval"
-    }
-
+pub struct WaitAndFilterUsers;
+impl Operation for WaitAndFilterUsers {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        operation_ok!(ProcessApprovalResult::Ok(input.iteration + 1))
+        //TODO: workflow is reaching this line when
+        if input.external_input.is_none() {
+            return Err(WorkflowError::non_retriable_domain_error(
+                "Expected external input not present!".to_string(),
+            ));
+        }
+        Ok(input.external_input.clone().unwrap())
+    }
+
+    fn name(&self) -> &str {
+        "WaitAndFilterUsers"
     }
 
     fn validate_input(input: &OperationInput) -> Result<()>
     where
         Self: Sized,
     {
-        input.value::<Proposal>().map(|_| ())
+        Ok(())
     }
 }
 
-#[derive(Deserialize, Serialize, Clone)]
-pub enum ProcessApprovalResult {
-    Ok(usize),
-    Declined(String),
+struct StoreResult;
+impl Operation for StoreResult {
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+        unimplemented!()
+    }
+
+    fn name(&self) -> &str {
+        unimplemented!()
+    }
+
+    fn validate_input(input: &OperationInput) -> Result<()>
+    where
+        Self: Sized,
+    {
+        unimplemented!()
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-    use evento_api::tests::{run_to_completion, MockOperation};
-
-    #[test]
-    fn test_run() {
-        let gen_proposal = MockOperation::new("GenerateProposal", |_| {
-            operation_ok!(Proposal {
-                operation_type: OperationType::Burn,
-            })
-        });
-
-        let mut operation_map: HashMap<String, Box<dyn Operation>> = HashMap::new();
-        operation_map.insert("GenerateProposal".into(), Box::new(gen_proposal));
-        operation_map.insert("NotifyApprovers".into(), Box::new(NotifyApprovers {}));
-        operation_map.insert("ProcessApproval".into(), Box::new(ProcessApproval {}));
-
-        let context = ProposalApprovalWorkflowContext {
-            operation_type: OperationType::Mint,
-            body: serde_json::Value::default(),
-        };
-        match run_to_completion(
-            Box::new(ProposalApprovalWorkflowFactory {}),
-            serde_json::to_value(context).unwrap(),
-            operation_map,
-        ) {
-            Ok((status, results)) => {
-                println!("OK");
-            }
-            Err(err) => {
-                panic!("Failed to complete: {:?}", err)
-            }
-        }
-    }
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct User {
+    id: u64,
+    employee_name: String,
+    employee_salary: u64,
+    employee_age: u64,
+    profile_image: String,
 }

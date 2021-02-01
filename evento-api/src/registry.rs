@@ -76,7 +76,12 @@ impl OperationExecutor for SimpleOperationExecutor {
         let operation = self
             .operation_map
             .get(input.operation_name.as_str())
-            .unwrap()
+            .ok_or_else(|| {
+                format_err!(
+                    "Operation '{}' does not exist in registry!",
+                    input.operation_name
+                )
+            })?
             .clone();
         let result = Self::execute_internal(operation.clone(), input.clone());
         match result {

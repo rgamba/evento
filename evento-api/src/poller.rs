@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use log::{error, info, warn};
@@ -16,50 +17,72 @@ use crate::{
     OperationExecutor, OperationResult, WorkflowData, WorkflowError, WorkflowErrorType,
     WorkflowRunner, WorkflowStatus,
 };
-
-lazy_static! {
-    static ref STOP_POLLING: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-}
+use std::sync::atomic::AtomicU8;
 
 static MAX_RETRIES: u64 = 10;
 
-pub fn start_polling(
-    state: State,
-    executor: Arc<dyn OperationExecutor>,
-    workflow_runner: Arc<dyn WorkflowRunner>,
-) -> JoinHandle<()> {
-    let state_clone = state.clone();
-    let executor_clone = executor.clone();
-    let runner_clone = workflow_runner.clone();
-    thread::spawn(move || {
-        while !STOP_POLLING.load(Ordering::SeqCst) {
-            info!("Starting poller thread");
-            // Main loop - in case the poller thread crashes, we can restart and we don't block the main thread.
-            let another_state_clone = state_clone.clone();
-            let another_executor_clone = executor_clone.clone();
-            let another_runner_clone = runner_clone.clone();
-            let handle = thread::spawn(move || {
-                // Poller loop thread
-                while !STOP_POLLING.load(Ordering::SeqCst) {
-                    poll(
-                        another_state_clone.clone(),
-                        another_executor_clone.clone(),
-                        another_runner_clone.clone(),
-                    );
-                }
-            });
-            if let Err(err) = handle.join() {
-                error!("Poller thread panicked: {:?}", err);
-                thread::sleep(Duration::from_secs(1));
-            } else {
-                error!("Polling has stopped");
-            }
-        }
-    })
+#[derive(Clone)]
+pub struct Poller {
+    stop_polling: Arc<AtomicU8>,
 }
 
-pub fn stop_polling() {
-    STOP_POLLING.store(true, Ordering::SeqCst);
+impl Poller {
+    pub fn start_polling(
+        state: State,
+        executor: Arc<dyn OperationExecutor>,
+        workflow_runner: Arc<dyn WorkflowRunner>,
+    ) -> Self {
+        let stop: Arc<AtomicU8> = Arc::new(AtomicU8::new(0));
+        let stop_clone = stop.clone();
+        let state_clone = state.clone();
+        let executor_clone = executor.clone();
+        let runner_clone = workflow_runner.clone();
+        thread::spawn(move || {
+            while stop_clone.load(Ordering::SeqCst) == 0 {
+                info!("Starting poller thread");
+                // Main loop - in case the poller thread crashes, we can restart and we don't block the main thread.
+                let another_state_clone = state_clone.clone();
+                let another_executor_clone = executor_clone.clone();
+                let another_runner_clone = runner_clone.clone();
+                let stop_clone_clone = stop_clone.clone();
+                let handle = thread::spawn(move || {
+                    // Poller loop thread
+                    while stop_clone_clone.load(Ordering::SeqCst) == 0 {
+                        poll(
+                            another_state_clone.clone(),
+                            another_executor_clone.clone(),
+                            another_runner_clone.clone(),
+                        );
+                    }
+                });
+
+                if let Err(err) = handle.join() {
+                    if let Some(msg) = err.downcast_ref::<String>() {
+                        error!("Poller thread panicked: {:?}", msg);
+                    } else {
+                        error!("Poller thread panicked with unexpected error: {:?}", err);
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                } else {
+                    error!("Polling has stopped");
+                }
+            }
+            stop_clone.store(2, Ordering::SeqCst);
+        });
+        Self { stop_polling: stop }
+    }
+
+    pub fn stop_polling(&self) -> Result<()> {
+        log::info!("Stopping poller");
+        self.stop_polling.store(1, Ordering::SeqCst);
+        for i in 0..1000 {
+            if self.stop_polling.load(Ordering::SeqCst) == 2 {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        bail!("Poller thread did not stop")
+    }
 }
 
 fn poll(
@@ -146,8 +169,12 @@ fn handle_execution_success(
 }
 
 fn handle_execution_failure(state: State, data: OperationExecutionData, error: WorkflowError) {
-    info!("Operation execution failed. data={:?}", data);
-    let count = data.retry_count.unwrap();
+    warn!(
+        "Operation execution failed. error={:?}, data={:?}",
+        error.clone(),
+        data
+    );
+    let count = data.retry_count.unwrap_or(0);
     let new_run_date = get_new_retry_date(count as u64);
     if count >= MAX_RETRIES as usize || !error.is_retriable {
         let wf_error = if !error.is_retriable {
@@ -180,6 +207,10 @@ fn handle_execution_failure(state: State, data: OperationExecutionData, error: W
             log::error!("Unable to dequeue operation: {:?}", e);
             return;
         }
+        log::warn!(
+            "Marking the workflow as aborted! workflow_id={}",
+            data.workflow_id
+        );
         if let Err(e) = state
             .store
             .abort_workflow_with_error(data.workflow_id, wf_error.clone())
@@ -253,7 +284,8 @@ mod test {
             .with(eq(operation_input.clone()))
             .return_once(move |_| Ok(result_clone));
         let state = create_test_state();
-        start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
+        let poller =
+            Poller::start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
         state
             .store
             .create_workflow(
@@ -279,7 +311,7 @@ mod test {
         let results = state.store.get_operation_results(wf_id).unwrap();
         assert_eq!(1, results.len());
         assert_eq!(&expected_result, results.get(0).unwrap());
-        stop_polling();
+        poller.stop_polling().unwrap();
     }
 
     #[test]
@@ -309,7 +341,8 @@ mod test {
                 })
             });
         let state = create_test_state();
-        start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
+        let poller =
+            Poller::start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
 
         state
             .store
@@ -329,7 +362,7 @@ mod test {
             .get_operation_results_with_errors(wf_id)
             .unwrap();
         assert_eq!(10, results.len());
-        stop_polling();
+        poller.stop_polling().unwrap();
     }
 
     fn wait_until_operations_queue_is_empty(state: State) {
