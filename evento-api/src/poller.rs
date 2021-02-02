@@ -24,6 +24,7 @@ static MAX_RETRIES: u64 = 10;
 #[derive(Clone)]
 pub struct Poller {
     stop_polling: Arc<AtomicU8>,
+    retry_strategy: Arc<dyn RetryStrategy>,
 }
 
 impl Poller {
@@ -31,12 +32,14 @@ impl Poller {
         state: State,
         executor: Arc<dyn OperationExecutor>,
         workflow_runner: Arc<dyn WorkflowRunner>,
+        retry_strategy: Arc<dyn RetryStrategy>,
     ) -> Self {
         let stop: Arc<AtomicU8> = Arc::new(AtomicU8::new(0));
         let stop_clone = stop.clone();
         let state_clone = state.clone();
         let executor_clone = executor.clone();
         let runner_clone = workflow_runner.clone();
+        let retry_strategy_clone = retry_strategy.clone();
         thread::spawn(move || {
             while stop_clone.load(Ordering::SeqCst) == 0 {
                 info!("Starting poller thread");
@@ -45,6 +48,7 @@ impl Poller {
                 let another_executor_clone = executor_clone.clone();
                 let another_runner_clone = runner_clone.clone();
                 let stop_clone_clone = stop_clone.clone();
+                let retry_strategy_clone_clone = retry_strategy_clone.clone();
                 let handle = thread::spawn(move || {
                     // Poller loop thread
                     while stop_clone_clone.load(Ordering::SeqCst) == 0 {
@@ -52,6 +56,7 @@ impl Poller {
                             another_state_clone.clone(),
                             another_executor_clone.clone(),
                             another_runner_clone.clone(),
+                            retry_strategy_clone_clone.clone(),
                         );
                     }
                 });
@@ -69,7 +74,10 @@ impl Poller {
             }
             stop_clone.store(2, Ordering::SeqCst);
         });
-        Self { stop_polling: stop }
+        Self {
+            stop_polling: stop,
+            retry_strategy,
+        }
     }
 
     pub fn stop_polling(&self) -> Result<()> {
@@ -89,6 +97,7 @@ fn poll(
     state: State,
     executor: Arc<dyn OperationExecutor>,
     workflow_runner: Arc<dyn WorkflowRunner>,
+    retry_strategy: Arc<dyn RetryStrategy>,
 ) {
     match state.store.fetch_operations(Utc::now()) {
         Ok(operations) => {
@@ -111,7 +120,12 @@ fn poll(
                             workflow_runner.clone(),
                         );
                     }
-                    Err(error) => handle_execution_failure(state.clone(), operation.clone(), error),
+                    Err(error) => handle_execution_failure(
+                        state.clone(),
+                        operation.clone(),
+                        error,
+                        retry_strategy.clone(),
+                    ),
                 }
             }
         }
@@ -168,15 +182,22 @@ fn handle_execution_success(
     }
 }
 
-fn handle_execution_failure(state: State, data: OperationExecutionData, error: WorkflowError) {
+fn handle_execution_failure(
+    state: State,
+    data: OperationExecutionData,
+    error: WorkflowError,
+    retry_strategy: Arc<dyn RetryStrategy>,
+) {
     warn!(
         "Operation execution failed. error={:?}, data={:?}",
         error.clone(),
         data
     );
-    let count = data.retry_count.unwrap_or(0);
-    let new_run_date = get_new_retry_date(count as u64);
-    if count >= MAX_RETRIES as usize || !error.is_retriable {
+    let count = data.retry_count.unwrap_or(1);
+    let new_run_date = retry_strategy
+        .next_retry_interval(count as u64)
+        .map(|d| Utc::now().checked_add_signed(d).unwrap());
+    if new_run_date.is_none() || !error.is_retriable {
         let wf_error = if !error.is_retriable {
             WorkflowError {
                 is_retriable: false,
@@ -231,7 +252,7 @@ fn handle_execution_failure(state: State, data: OperationExecutionData, error: W
         }
         let mut new_data = data.clone();
         new_data.retry_count = Some(count + 1);
-        if let Err(e) = state.store.queue_operation(new_data, new_run_date) {
+        if let Err(e) = state.store.queue_operation(new_data, new_run_date.unwrap()) {
             // This is a recoverable scenario, operation will be fetched again shortly and executed again.
             log::error!(
                 "Unable to re-queue the failed operation. workflow_id={}, error={:?}",
@@ -239,6 +260,24 @@ fn handle_execution_failure(state: State, data: OperationExecutionData, error: W
                 e
             );
         }
+    }
+}
+
+pub trait RetryStrategy: Send + Sync {
+    fn next_retry_interval(&self, retry_count: u64) -> Option<chrono::Duration>;
+}
+
+pub struct FixedRetryStrategy {
+    pub interval: chrono::Duration,
+    pub max_retries: u64,
+}
+
+impl RetryStrategy for FixedRetryStrategy {
+    fn next_retry_interval(&self, retry_count: u64) -> Option<chrono::Duration> {
+        if retry_count >= self.max_retries {
+            return None;
+        }
+        Some(self.interval)
     }
 }
 
@@ -286,8 +325,15 @@ mod test {
             .with(eq(operation_input.clone()))
             .return_once(move |_| Ok(result_clone));
         let state = create_test_state();
-        let poller =
-            Poller::start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
+        let poller = Poller::start_polling(
+            state.clone(),
+            Arc::new(executor),
+            Arc::new(workflow_runner),
+            Arc::new(FixedRetryStrategy {
+                interval: chrono::Duration::seconds(0),
+                max_retries: 10,
+            }),
+        );
         state
             .store
             .create_workflow(
@@ -343,8 +389,15 @@ mod test {
                 })
             });
         let state = create_test_state();
-        let poller =
-            Poller::start_polling(state.clone(), Arc::new(executor), Arc::new(workflow_runner));
+        let poller = Poller::start_polling(
+            state.clone(),
+            Arc::new(executor),
+            Arc::new(workflow_runner),
+            Arc::new(FixedRetryStrategy {
+                interval: chrono::Duration::seconds(0),
+                max_retries: 10,
+            }),
+        );
 
         state
             .store
@@ -369,9 +422,9 @@ mod test {
 
     fn wait_until_operations_queue_is_empty(state: State) {
         for i in 1..100 {
-            match state.store.fetch_operations(Utc::now()) {
-                Ok(operations) => {
-                    if operations.is_empty() {
+            match state.store.count_queued_elements() {
+                Ok(count) => {
+                    if count == 0 {
                         return;
                     }
                 }

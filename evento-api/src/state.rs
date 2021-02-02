@@ -5,12 +5,17 @@ use crate::{
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
+use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct State {
     pub store: Arc<dyn Store>,
+}
+
+lazy_static! {
+    static ref SAFE_RETRY_DURATION: chrono::Duration = chrono::Duration::seconds(60);
 }
 
 pub trait Store: Send + Sync {
@@ -43,6 +48,8 @@ pub trait Store: Send + Sync {
 
     /// Fetch operations that whose run_date is less or equal to the current now provided.
     fn fetch_operations(&self, current_now: DateTime<Utc>) -> Result<Vec<OperationExecutionData>>;
+
+    fn count_queued_elements(&self) -> Result<u64>;
 
     /// Returns the execution data for the external operation.
     ///
@@ -225,7 +232,8 @@ impl Store for InMemoryStore {
         Ok(guard
             .iter_mut()
             .filter(|(_, run_date, state)| {
-                (*state == Self::QUEUED || *state == Self::RETRY) && current_now.gt(run_date)
+                (*state == Self::QUEUED || *state == Self::RETRY)
+                    && (&current_now == run_date || current_now.gt(run_date))
             })
             .map(|(data, next_run_date, state)| {
                 let copy = data.clone();
@@ -234,11 +242,20 @@ impl Store for InMemoryStore {
                 // Give the caller some time to execute and requeue/dequeue the task, otherwise
                 // it needs to be delivered to guarantee at least once execution.
                 *next_run_date = next_run_date
-                    .checked_add_signed(chrono::Duration::seconds(5))
+                    .checked_add_signed(*SAFE_RETRY_DURATION)
                     .unwrap();
                 copy
             })
             .collect())
+    }
+
+    fn count_queued_elements(&self) -> Result<u64> {
+        let mut guard = self.queue.lock().unwrap();
+        let count = guard
+            .iter()
+            .filter(|(_, _, state)| *state == Self::QUEUED)
+            .count();
+        Ok(count as u64)
     }
 
     fn complete_external_operation(
@@ -262,16 +279,6 @@ impl Store for InMemoryStore {
             .ok_or(format_err!(
                 "Unable to find operation with external key provided"
             ))?;
-        //TODO: somehow verify that the external input payload is correct and statically type it.
-        /*self.store_execution_result(
-            data.workflow_id,
-            data.input.operation_name.clone(),
-            Ok(OperationResult::new_from_value(
-                external_input_payload,
-                data.input.iteration,
-                data.input.operation_name.clone(),
-            )),
-        )?;*/
         Ok(data)
     }
 
@@ -462,7 +469,7 @@ pub mod tests {
         assert_eq!(0, results.get(0).unwrap().retry_count.unwrap_or_default());
         // Try fetching again without dequeuing the element should return the same element with a retry count incremented
         let results = store
-            .fetch_operations(now.checked_add_signed(Duration::seconds(5)).unwrap())
+            .fetch_operations(now.checked_add_signed(*SAFE_RETRY_DURATION).unwrap())
             .unwrap();
         assert_eq!(1, results.len());
         assert_eq!(1, results.get(0).unwrap().retry_count.unwrap_or_default());
@@ -508,15 +515,5 @@ pub mod tests {
             .find_wait_operation(external_key.clone())
             .unwrap()
             .unwrap();
-        // Trying to fetch that operation again should not return anything
-        /*let results = store
-            .fetch_operations(now.checked_add_signed(Duration::seconds(15)).unwrap())
-            .unwrap();
-        assert!(results.is_empty());
-        // Check execution results to verify its in there
-        let results = store.get_operation_results(wf_id).unwrap();
-        assert_eq!(3, results.len());
-        let last = results.last().unwrap();
-        assert_eq!(last.result::<String>().unwrap(), ext_payload_input.clone());*/
     }
 }

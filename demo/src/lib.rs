@@ -75,7 +75,6 @@ impl Operation for FetchUsers {
     }
 }
 
-#[test]
 fn test_fetch() {
     let fetch = FetchUsers {};
     let result = fetch

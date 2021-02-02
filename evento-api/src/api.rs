@@ -1,4 +1,4 @@
-use crate::poller::Poller;
+use crate::poller::{FixedRetryStrategy, Poller};
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
     OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
@@ -37,6 +37,10 @@ impl WorkflowFacade {
             state.clone(),
             operation_executor.clone(),
             workflow_runner.clone(),
+            Arc::new(FixedRetryStrategy {
+                interval: chrono::Duration::seconds(1),
+                max_retries: 10,
+            }),
         );
         Self {
             workflow_registry,
