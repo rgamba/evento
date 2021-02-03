@@ -1,6 +1,7 @@
 //! Framework for declarative workflows.
 mod admin;
 pub mod api;
+pub mod db;
 #[cfg(test)]
 mod integ_tests;
 pub mod poller;
