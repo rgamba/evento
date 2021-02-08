@@ -15,7 +15,7 @@ pub struct State {
 }
 
 lazy_static! {
-    static ref SAFE_RETRY_DURATION: chrono::Duration = chrono::Duration::seconds(60);
+    pub static ref SAFE_RETRY_DURATION: chrono::Duration = chrono::Duration::seconds(60);
 }
 
 pub trait Store: Send + Sync {
@@ -67,6 +67,12 @@ pub trait Store: Send + Sync {
         external_input_payload: serde_json::Value,
     ) -> Result<OperationExecutionData>;
 
+    /// Persist an operation execution result.
+    ///
+    /// Only a single successful execution is allowed for any workflow_id, operation_name, iteration
+    /// combination. Attempt to record multiple successful execution will result in error.
+    ///
+    /// Multiple errored executions are allowed and all will be persisted and not replaced.
     fn store_execution_result(
         &self,
         workflow_id: WorkflowId,
@@ -238,7 +244,6 @@ impl Store for InMemoryStore {
             .map(|(data, next_run_date, state)| {
                 let copy = data.clone();
                 *state = Self::RETRY;
-                data.retry_count = Some(data.retry_count.unwrap_or(0) + 1);
                 // Give the caller some time to execute and requeue/dequeue the task, otherwise
                 // it needs to be delivered to guarantee at least once execution.
                 *next_run_date = next_run_date
@@ -467,12 +472,12 @@ pub mod tests {
             .unwrap();
         assert_eq!(1, results.len());
         assert_eq!(0, results.get(0).unwrap().retry_count.unwrap_or_default());
-        // Try fetching again without dequeuing the element should return the same element with a retry count incremented
+        // Try fetching again without dequeuing the element
         let results = store
             .fetch_operations(now.checked_add_signed(*SAFE_RETRY_DURATION).unwrap())
             .unwrap();
         assert_eq!(1, results.len());
-        assert_eq!(1, results.get(0).unwrap().retry_count.unwrap_or_default());
+        assert_eq!(0, results.get(0).unwrap().retry_count.unwrap_or_default());
         // Dequeue the element and check that it is actually removed from the queue.
         store
             .dequeue_operation(wf_id, operation_name.clone(), 0)

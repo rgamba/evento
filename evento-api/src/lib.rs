@@ -1,4 +1,7 @@
 //! Framework for declarative workflows.
+
+#[macro_use]
+extern crate diesel;
 mod admin;
 pub mod api;
 pub mod db;
@@ -17,8 +20,9 @@ use chrono::{DateTime, Utc};
 use mockall::automock;
 use serde::de::DeserializeOwned;
 use serde::export::Formatter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex};
@@ -57,7 +61,7 @@ pub trait WorkflowFactory: Send + Sync {
     ) -> Box<dyn Workflow>;
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct WorkflowData {
     pub id: WorkflowId,
     pub name: String,
@@ -68,7 +72,7 @@ pub struct WorkflowData {
 }
 
 /// Represents the status of a Workflow at a given point in time of the execution.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum WorkflowStatus {
     /// Workflow has just been created and has not been executed for the first time yet.
     Created,
@@ -91,7 +95,7 @@ pub enum WorkflowStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowError {
     pub is_retriable: bool,
     pub error: String,
@@ -110,7 +114,7 @@ impl Display for WorkflowError {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum WorkflowErrorType {
     DomainError,
     InternalError,
@@ -249,7 +253,7 @@ impl OperationResult {
 
 /// This is the data that will be persisted in order to execute the operation at some
 /// point in the future.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OperationInput {
     pub operation_name: String,
     pub workflow_name: String,
