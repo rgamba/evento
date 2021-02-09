@@ -1,25 +1,17 @@
 use anyhow::{bail, Result};
-use chrono::{DateTime, Utc};
-use lazy_static::lazy_static;
+use chrono::Utc;
 use log::{error, info, warn};
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     thread,
     time::Duration,
 };
-use thread::JoinHandle;
 
 use crate::{
     state::{OperationExecutionData, State},
-    OperationExecutor, OperationResult, WorkflowData, WorkflowError, WorkflowErrorType,
-    WorkflowRunner, WorkflowStatus,
+    OperationExecutor, OperationResult, WorkflowError, WorkflowErrorType, WorkflowRunner,
 };
 use std::sync::atomic::AtomicU8;
-
-static MAX_RETRIES: u64 = 10;
 
 #[derive(Clone)]
 pub struct Poller {
@@ -83,7 +75,7 @@ impl Poller {
     pub fn stop_polling(&self) -> Result<()> {
         log::info!("Stopping poller");
         self.stop_polling.store(1, Ordering::SeqCst);
-        for i in 0..1000 {
+        for _ in 0..1000 {
             if self.stop_polling.load(Ordering::SeqCst) == 2 {
                 return Ok(());
             }
@@ -281,23 +273,15 @@ impl RetryStrategy for FixedRetryStrategy {
     }
 }
 
-fn get_new_retry_date(retry_count: u64) -> DateTime<Utc> {
-    Utc::now()
-        .checked_add_signed(chrono::Duration::seconds(1))
-        .unwrap()
-}
-
 #[cfg(test)]
 mod test {
     use crate::{
-        MockOperationExecutor, MockWorkflowRunner, OperationInput, OperationResult, WorkflowId,
+        MockOperationExecutor, MockWorkflowRunner, OperationInput, OperationResult, WorkflowStatus,
     };
-    use std::collections::HashMap;
 
-    use crate::{registry::SimpleOperationExecutor, state::tests::create_test_state};
+    use crate::state::tests::create_test_state;
 
     use super::*;
-    use crate::runners::tests::wait_for_workflow_to_complete;
     use mockall::predicate::eq;
     use uuid::Uuid;
 
@@ -421,7 +405,7 @@ mod test {
     }
 
     fn wait_until_operations_queue_is_empty(state: State) {
-        for i in 1..100 {
+        for _ in 1..100 {
             match state.store.count_queued_elements() {
                 Ok(count) => {
                     if count == 0 {

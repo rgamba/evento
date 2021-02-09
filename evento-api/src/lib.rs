@@ -12,7 +12,6 @@ pub mod registry;
 pub mod runners;
 pub mod state;
 
-use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, ResponseError};
 use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
@@ -22,7 +21,6 @@ use serde::de::DeserializeOwned;
 use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex};
@@ -206,7 +204,7 @@ pub trait Operation: Send + Sync {
     where
         Self: Sized;
 
-    fn validate_external_input(&self, input: serde_json::Value) -> Result<()> {
+    fn validate_external_input(&self, _input: serde_json::Value) -> Result<()> {
         Ok(())
     }
 }
@@ -551,7 +549,7 @@ impl WorkflowInnerState {
     }
 
     pub fn iteration_counter(&self, operation_name: &String) -> usize {
-        let mut guard = self.iteration_counter_map.lock().unwrap();
+        let guard = self.iteration_counter_map.lock().unwrap();
         guard.get(operation_name.as_str()).map_or(0, |v| v.clone())
     }
 

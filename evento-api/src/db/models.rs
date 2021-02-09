@@ -6,8 +6,6 @@ use crate::{
 };
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
-use diesel::prelude::*;
-use diesel::QueryDsl;
 use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom, TryInto};
 use uuid::Uuid;

@@ -4,7 +4,7 @@ use crate::{
     CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
     WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
 };
-use anyhow::{format_err, Context, Result};
+use anyhow::{format_err, Result};
 use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
@@ -243,7 +243,7 @@ impl Store for SqlStore {
     fn complete_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
         let new_status = serde_json::to_value(WorkflowStatus::Completed).unwrap();
-        let data = diesel::update(workflows.find(workflow_id))
+        diesel::update(workflows.find(workflow_id))
             .set(status.eq(serde_json::to_string(&new_status).unwrap()))
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
             .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
@@ -254,7 +254,7 @@ impl Store for SqlStore {
         use crate::db::schema::workflows::dsl::*;
         let new_status =
             serde_json::to_value(WorkflowStatus::CompletedWithError(error.into())).unwrap();
-        let data = diesel::update(workflows.find(workflow_id))
+        diesel::update(workflows.find(workflow_id))
             .set(status.eq(serde_json::to_string(&new_status).unwrap()))
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
             .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
@@ -264,7 +264,7 @@ impl Store for SqlStore {
     fn cancel_workflow(&self, workflow_id: WorkflowId, _reason: String) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
         let new_status = serde_json::to_value(WorkflowStatus::Cancelled).unwrap();
-        let data = diesel::update(workflows.find(workflow_id))
+        diesel::update(workflows.find(workflow_id))
             .set(status.eq(serde_json::to_string(&new_status).unwrap()))
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
             .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
@@ -278,7 +278,7 @@ impl Store for SqlStore {
     ) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
         let new_status = serde_json::to_value(WorkflowStatus::Error(error.into())).unwrap();
-        let data = diesel::update(workflows.find(workflow_id))
+        diesel::update(workflows.find(workflow_id))
             .set(status.eq(serde_json::to_string(&new_status).unwrap()))
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
             .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
@@ -327,7 +327,21 @@ impl Store for SqlStore {
         &self,
         operations: Vec<(OperationExecutionData, DateTime<Utc>)>,
     ) -> Result<()> {
-        unimplemented!()
+        use crate::db::schema::operations_queue::dsl::*;
+        let dtos = operations
+            .into_iter()
+            .map(|(data, run_date)| {
+                let mut dto: OperationQueueDTO = data.try_into()?;
+                dto.state = QueueState::Queued.to_string();
+                dto.next_run_date = run_date;
+                Ok(dto)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        diesel::insert_into(operations_queue)
+            .values(&dtos)
+            .execute(&self.db_pool.get()?)
+            .map_err(|err| format_err!("Unable to queue operations: {}", err))?;
+        Ok(())
     }
 }
 
@@ -342,6 +356,10 @@ pub mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
+    fn create_store() -> SqlStore {
+        SqlStore::new_with_pool(new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap())
+    }
+
     #[test]
     fn test_sql_store() {
         let wf_name = "test".to_string();
@@ -349,9 +367,7 @@ pub mod tests {
         let correlation_id = "correlationid".to_string();
         let context = json!({"name": "ricardo"});
         let operation_name = "test_operation".to_string();
-        let store = SqlStore::new_with_pool(
-            new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap(),
-        );
+        let store = create_store();
         // Create workflow
         store
             .create_workflow(

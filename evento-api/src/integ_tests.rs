@@ -5,13 +5,12 @@ use crate::runners::tests::wait_for_workflow_to_complete;
 use crate::runners::AsyncWorkflowRunner;
 use crate::state::{InMemoryStore, State};
 use crate::{
-    run, wait_for_external, MockOperation, Operation, OperationInput, Workflow, WorkflowError,
-    WorkflowFactory, WorkflowStatus,
+    run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError, WorkflowFactory,
+    WorkflowStatus,
 };
 use anyhow::{format_err, Result};
 use chrono::Utc;
 use evento_derive::workflow;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
@@ -20,7 +19,7 @@ use uuid::Uuid;
 
 #[test]
 fn integration_tests() {
-    env_logger::try_init();
+    env_logger::try_init().unwrap();
 
     let state = State {
         store: Arc::new(InMemoryStore::new()),
@@ -33,7 +32,7 @@ fn integration_tests() {
     factories.insert("WaitWorkflow".to_string(), Arc::new(WaitWorkflowFactory {}));
     let registry = Arc::new(SimpleWorkflowRegistry::new(factories));
 
-    let mut operation_a = A {};
+    let operation_a = A {};
 
     let mut operation_map: HashMap<String, Arc<dyn Operation>> = HashMap::new();
     operation_map.insert("A".to_string(), Arc::new(operation_a));
@@ -54,7 +53,7 @@ fn integration_tests() {
         )
         .unwrap()
         .id;
-    let wf = facade.get_workflow_by_id(wf_id).unwrap().unwrap();
+    facade.get_workflow_by_id(wf_id).unwrap().unwrap();
     thread::sleep(Duration::from_secs(3));
     facade
         .complete_external(Uuid::nil(), serde_json::Value::Bool(true))
@@ -67,6 +66,7 @@ fn integration_tests() {
 
 #[workflow]
 struct SimpleWorkflow {
+    #[allow(dead_code)]
     context: String,
 }
 
@@ -81,6 +81,7 @@ impl Workflow for SimpleWorkflow {
 
 #[workflow]
 struct WaitWorkflow {
+    #[allow(dead_code)]
     context: String,
 }
 
@@ -98,7 +99,7 @@ impl Workflow for WaitWorkflow {
 
 struct A;
 impl Operation for A {
-    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         Ok(serde_json::Value::Bool(true))
     }
 

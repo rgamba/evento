@@ -1,7 +1,6 @@
 use crate::{
     CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
-    WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowRunner,
-    WorkflowStatus,
+    WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
@@ -136,7 +135,6 @@ pub struct InMemoryStore {
 impl InMemoryStore {
     const QUEUED: &'static str = "Q";
     const RETRY: &'static str = "R";
-    const DEQUEUED: &'static str = "D";
 
     pub fn new() -> Self {
         Self {
@@ -191,7 +189,7 @@ impl Store for InMemoryStore {
         &self,
         external_key: ExternalInputKey,
     ) -> Result<Option<OperationExecutionData>> {
-        let mut guard = self.queue.lock().unwrap();
+        let guard = self.queue.lock().unwrap();
         let data = guard
             .iter()
             .find(|(data, _, _)| {
@@ -255,7 +253,7 @@ impl Store for InMemoryStore {
     }
 
     fn count_queued_elements(&self) -> Result<u64> {
-        let mut guard = self.queue.lock().unwrap();
+        let guard = self.queue.lock().unwrap();
         let count = guard
             .iter()
             .filter(|(_, _, state)| *state == Self::QUEUED)
@@ -324,7 +322,7 @@ impl Store for InMemoryStore {
         }
     }
 
-    fn cancel_workflow(&self, workflow_id: WorkflowId, reason: String) -> Result<()> {
+    fn cancel_workflow(&self, _workflow_id: WorkflowId, _reason: String) -> Result<()> {
         unimplemented!()
     }
 

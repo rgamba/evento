@@ -6,7 +6,7 @@ use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use lazy_static::lazy_static;
 use log::{error, info, warn};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::{
     sync::{
         mpsc::{self, Receiver, Sender},
@@ -247,6 +247,7 @@ impl AsyncWorkflowRunner {
         result
     }
 
+    #[allow(unused_must_use)]
     pub fn stop(&self) -> Result<()> {
         log::info!("Stopping runner");
         self.stop_state.store(1, Ordering::SeqCst);
@@ -259,7 +260,7 @@ impl AsyncWorkflowRunner {
             created_at: Utc::now(),
             context: serde_json::Value::Null,
         });
-        for i in 0..1000 {
+        for _ in 0..1000 {
             if self.stop_state.load(Ordering::SeqCst) == 2 {
                 return Ok(());
             }
@@ -276,7 +277,7 @@ pub mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{registry::SimpleWorkflowRegistry, state::tests::create_test_state, Workflow};
+    use crate::{registry::SimpleWorkflowRegistry, state::tests::create_test_state};
 
     #[test]
     fn test_runner_ok() {
