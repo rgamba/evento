@@ -43,7 +43,7 @@ async fn complete_external(
 
 fn create_facade() -> AppFacade {
     let state = State {
-        store: Arc::new(InMemoryStore::new()),
+        store: Arc::new(InMemoryStore::default()),
     };
     let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
     factories.insert("TestWorkflow".to_string(), Arc::new(TestWorkflowFactory {}));

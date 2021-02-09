@@ -22,7 +22,7 @@ fn integration_tests() {
     env_logger::try_init().unwrap();
 
     let state = State {
-        store: Arc::new(InMemoryStore::new()),
+        store: Arc::new(InMemoryStore::default()),
     };
     let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
     factories.insert(
@@ -38,12 +38,7 @@ fn integration_tests() {
     operation_map.insert("A".to_string(), Arc::new(operation_a));
     let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    let facade = WorkflowFacade::new(
-        state.clone(),
-        registry.clone(),
-        executor.clone(),
-        runner.clone(),
-    );
+    let facade = WorkflowFacade::new(state.clone(), registry, executor, runner.clone());
 
     let wf_id = facade
         .create_workflow(
@@ -59,7 +54,7 @@ fn integration_tests() {
         .complete_external(Uuid::nil(), serde_json::Value::Bool(true))
         .unwrap();
 
-    wait_for_workflow_to_complete(wf_id, state.clone(), Duration::from_secs(5)).unwrap();
+    wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(5)).unwrap();
     runner.stop().unwrap();
     facade.stop().unwrap();
 }

@@ -28,7 +28,7 @@ impl Poller {
     ) -> Self {
         let stop: Arc<AtomicU8> = Arc::new(AtomicU8::new(0));
         let stop_clone = stop.clone();
-        let state_clone = state.clone();
+        let state_clone = state;
         let executor_clone = executor.clone();
         let runner_clone = workflow_runner.clone();
         let retry_strategy_clone = retry_strategy.clone();
@@ -182,8 +182,7 @@ fn handle_execution_failure(
 ) {
     warn!(
         "Operation execution failed. error={:?}, data={:?}",
-        error.clone(),
-        data
+        error, data
     );
     let count = data.retry_count.unwrap_or(1);
     let new_run_date = retry_strategy
@@ -226,13 +225,13 @@ fn handle_execution_failure(
         );
         if let Err(e) = state
             .store
-            .abort_workflow_with_error(data.workflow_id, wf_error.clone())
+            .abort_workflow_with_error(data.workflow_id, wf_error)
         {
             // This will leave the operation in an inconsistent state.
             //TODO:raise alert
             log::error!("Unable to abort workflow: {:?}", e);
         }
-    } else {
+    } else if let Some(new_run_date) = new_run_date {
         if let Err(e) = state.store.store_execution_result(
             data.workflow_id,
             data.input.operation_name.clone(),
@@ -244,7 +243,7 @@ fn handle_execution_failure(
         }
         let mut new_data = data.clone();
         new_data.retry_count = Some(count + 1);
-        if let Err(e) = state.store.queue_operation(new_data, new_run_date.unwrap()) {
+        if let Err(e) = state.store.queue_operation(new_data, new_run_date) {
             // This is a recoverable scenario, operation will be fetched again shortly and executed again.
             log::error!(
                 "Unable to re-queue the failed operation. workflow_id={}, error={:?}",
@@ -334,7 +333,7 @@ mod test {
                     workflow_id: wf_id,
                     correlation_id: "".to_string(),
                     retry_count: None,
-                    input: operation_input.clone(),
+                    input: operation_input,
                 },
                 Utc::now(),
             )
@@ -390,7 +389,7 @@ mod test {
                     workflow_id: wf_id,
                     correlation_id: "".to_string(),
                     retry_count: None,
-                    input: operation_input.clone(),
+                    input: operation_input,
                 },
                 Utc::now(),
             )
@@ -406,13 +405,10 @@ mod test {
 
     fn wait_until_operations_queue_is_empty(state: State) {
         for _ in 1..100 {
-            match state.store.count_queued_elements() {
-                Ok(count) => {
-                    if count == 0 {
-                        return;
-                    }
+            if let Ok(count) = state.store.count_queued_elements() {
+                if count == 0 {
+                    return;
                 }
-                _ => {}
             }
             thread::sleep(Duration::from_millis(100));
         }

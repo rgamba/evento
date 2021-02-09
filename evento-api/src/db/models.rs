@@ -102,7 +102,7 @@ impl TryFrom<OperationExecutionData> for OperationQueueDTO {
             input: serde_json::to_value(value.input.clone())?,
             state: QueueState::Queued.to_string(),
             next_run_date: Utc::now(),
-            external_key: value.input.external_key.clone(),
+            external_key: value.input.external_key,
             operation_name: value.input.operation_name.clone(),
             iteration: value.input.iteration as i32,
         })
@@ -176,9 +176,9 @@ impl
     ) -> Result<Self, Self::Error> {
         Ok(Self {
             id: Uuid::new_v4(),
-            workflow_id: workflow_id,
-            is_error: if let Err(_) = value { true } else { false },
-            operation_name: operation_name,
+            workflow_id,
+            is_error: value.is_err(),
+            operation_name,
             iteration: if let Ok(r) = value.clone() {
                 r.iteration as i32
             } else {
@@ -190,7 +190,7 @@ impl
                 serde_json::Value::Null
             },
             created_at: Utc::now(),
-            error: if let Err(err) = value.clone() {
+            error: if let Err(err) = value {
                 Some(serde_json::to_value(err).unwrap())
             } else {
                 None

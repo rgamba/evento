@@ -183,7 +183,7 @@ impl Store for SqlStore {
                 .checked_add_signed(*SAFE_RETRY_DURATION)
                 .unwrap();
             // Block the elements until `safe_retry_date` and return them.
-            let dtos = diesel::update(operations_queue.filter(id.eq_any(ids.clone())))
+            let dtos = diesel::update(operations_queue.filter(id.eq_any(ids)))
                 .set((
                     state.eq(QueueState::Retry.to_string()),
                     next_run_date.eq(safe_retry_date),
@@ -277,7 +277,7 @@ impl Store for SqlStore {
         error: WorkflowError,
     ) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
-        let new_status = serde_json::to_value(WorkflowStatus::Error(error.into())).unwrap();
+        let new_status = serde_json::to_value(WorkflowStatus::Error(error)).unwrap();
         diesel::update(workflows.find(workflow_id))
             .set(status.eq(serde_json::to_string(&new_status).unwrap()))
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
@@ -396,14 +396,10 @@ pub mod tests {
         let operation_result_2 =
             OperationResult::new(result_content_2.clone(), 1, operation_name.clone()).unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result.clone()))
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
             .unwrap();
         store
-            .store_execution_result(
-                wf_id,
-                operation_name.clone(),
-                Ok(operation_result_2.clone()),
-            )
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
             .unwrap();
         // Fetch all execution results
         let results = store.get_operation_results(wf_id).unwrap();
@@ -423,9 +419,7 @@ pub mod tests {
         };
         // Try fetch an element with a run_date greater than current time
         let now = Utc::now();
-        store
-            .queue_operation(execution_data.clone(), now.clone())
-            .unwrap();
+        store.queue_operation(execution_data, now).unwrap();
         let results = store
             .fetch_operations(now.checked_sub_signed(Duration::seconds(5)).unwrap())
             .unwrap();
@@ -456,11 +450,11 @@ pub mod tests {
             correlation_id: String::new(),
             retry_count: None,
             input: OperationInput::new_external(
-                wf_name.clone(),
-                operation_name.clone(),
+                wf_name,
+                operation_name,
                 0,
-                result_content.clone(),
-                external_key.clone(),
+                result_content,
+                external_key,
             )
             .unwrap(),
         };
@@ -470,7 +464,7 @@ pub mod tests {
                 now.checked_add_signed(Duration::seconds(10)).unwrap(),
             )
             .unwrap();
-        let ext_payload_input = serde_json::to_value(result_content_2.clone()).unwrap();
+        let ext_payload_input = serde_json::to_value(result_content_2).unwrap();
         let operation = store
             .complete_external_operation(external_key, ext_payload_input.clone())
             .unwrap();
@@ -478,10 +472,7 @@ pub mod tests {
             operation.input.external_input,
             Some(x) if x == ext_payload_input
         ));
-        store
-            .find_wait_operation(external_key.clone())
-            .unwrap()
-            .unwrap();
+        store.find_wait_operation(external_key).unwrap().unwrap();
     }
 
     #[derive(Debug)]

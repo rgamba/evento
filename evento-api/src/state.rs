@@ -125,18 +125,23 @@ pub struct OperationExecutionData {
     pub input: OperationInput,
 }
 
+type InMemoryQueue = Mutex<Vec<(OperationExecutionData, DateTime<Utc>, &'static str)>>;
+type OperationResults =
+    Mutex<HashMap<WorkflowId, Vec<(OperationName, Result<OperationResult, WorkflowError>)>>>;
+
 pub struct InMemoryStore {
-    pub operation_results:
-        Mutex<HashMap<WorkflowId, Vec<(OperationName, Result<OperationResult, WorkflowError>)>>>,
-    pub queue: Mutex<Vec<(OperationExecutionData, DateTime<Utc>, &'static str)>>, // (data, run_date)
+    pub operation_results: OperationResults,
+    pub queue: InMemoryQueue, // (data, run_date)
     pub workflows: Mutex<Vec<WorkflowData>>,
 }
 
 impl InMemoryStore {
     const QUEUED: &'static str = "Q";
     const RETRY: &'static str = "R";
+}
 
-    pub fn new() -> Self {
+impl Default for InMemoryStore {
+    fn default() -> Self {
         Self {
             operation_results: Mutex::new(HashMap::new()),
             queue: Mutex::new(Vec::new()),
@@ -168,10 +173,7 @@ impl Store for InMemoryStore {
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>> {
         let guard = self.workflows.lock().unwrap();
-        Ok(guard
-            .iter()
-            .find(|w| w.id == workflow_id)
-            .map(|w| w.clone()))
+        Ok(guard.iter().find(|w| w.id == workflow_id).cloned())
     }
 
     fn get_workflow_by_correlation_id(
@@ -182,7 +184,7 @@ impl Store for InMemoryStore {
         Ok(guard
             .iter()
             .find(|w| w.correlation_id == correlation_id)
-            .map(|w| w.clone()))
+            .cloned())
     }
 
     fn find_wait_operation(
@@ -279,7 +281,7 @@ impl Store for InMemoryStore {
                 *run_date = Utc::now(); // Queue this for immediate execution
                 data.clone()
             })
-            .ok_or(format_err!(
+            .ok_or_else(|| format_err!(
                 "Unable to find operation with external key provided"
             ))?;
         Ok(data)
@@ -296,7 +298,7 @@ impl Store for InMemoryStore {
             guard.insert(workflow_id, vec![]);
         }
         let list = guard.get_mut(&workflow_id).unwrap();
-        list.push((operation_name.clone(), result));
+        list.push((operation_name, result));
         Ok(())
     }
 
@@ -375,7 +377,7 @@ impl Store for InMemoryStore {
                     && data.input.operation_name == operation_name
                     && data.input.iteration == iteration
             })
-            .ok_or(format_err!("Unable to find operation"))?;
+            .ok_or_else(|| format_err!("Unable to find operation"))?;
         let (data, _, _) = guard.remove(index);
         Ok(data)
     }
@@ -390,7 +392,7 @@ pub mod tests {
 
     pub fn create_test_state() -> State {
         State {
-            store: Arc::new(InMemoryStore::new()),
+            store: Arc::new(InMemoryStore::default()),
         }
     }
 
@@ -401,7 +403,7 @@ pub mod tests {
         let correlation_id = "correlationid".to_string();
         let context = serde_json::Value::String("test".to_string());
         let operation_name = "test_operation".to_string();
-        let store = InMemoryStore::new();
+        let store = InMemoryStore::default();
         // Create workflow
         store
             .create_workflow(
@@ -430,14 +432,10 @@ pub mod tests {
         let operation_result_2 =
             OperationResult::new(result_content_2.clone(), 0, operation_name.clone()).unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result.clone()))
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
             .unwrap();
         store
-            .store_execution_result(
-                wf_id,
-                operation_name.clone(),
-                Ok(operation_result_2.clone()),
-            )
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
             .unwrap();
         // Fetch all execution results
         let results = store.get_operation_results(wf_id).unwrap();
@@ -457,9 +455,7 @@ pub mod tests {
         };
         // Try fetch an element with a run_date greater than current time
         let now = Utc::now();
-        store
-            .queue_operation(execution_data.clone(), now.clone())
-            .unwrap();
+        store.queue_operation(execution_data, now).unwrap();
         let results = store
             .fetch_operations(now.checked_sub_signed(Duration::seconds(5)).unwrap())
             .unwrap();
@@ -492,11 +488,11 @@ pub mod tests {
             correlation_id: String::new(),
             retry_count: None,
             input: OperationInput::new_external(
-                wf_name.clone(),
-                operation_name.clone(),
+                wf_name,
+                operation_name,
                 0,
-                result_content.clone(),
-                external_key.clone(),
+                result_content,
+                external_key,
             )
             .unwrap(),
         };
@@ -506,7 +502,7 @@ pub mod tests {
                 now.checked_add_signed(Duration::seconds(10)).unwrap(),
             )
             .unwrap();
-        let ext_payload_input = serde_json::to_value(result_content_2.clone()).unwrap();
+        let ext_payload_input = serde_json::to_value(result_content_2).unwrap();
         let operation = store
             .complete_external_operation(external_key, ext_payload_input.clone())
             .unwrap();
@@ -514,9 +510,6 @@ pub mod tests {
             operation.input.external_input,
             Some(x) if x == ext_payload_input
         ));
-        store
-            .find_wait_operation(external_key.clone())
-            .unwrap()
-            .unwrap();
+        store.find_wait_operation(external_key).unwrap().unwrap();
     }
 }

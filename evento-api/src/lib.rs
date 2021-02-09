@@ -145,17 +145,11 @@ impl WorkflowError {
     }
 
     pub fn is_internal_error(&self) -> bool {
-        match self.error_type {
-            WorkflowErrorType::InternalError => true,
-            _ => false,
-        }
+        matches!(self.error_type, WorkflowErrorType::InternalError)
     }
 
     pub fn is_domain_error(&self) -> bool {
-        match self.error_type {
-            WorkflowErrorType::DomainError => true,
-            _ => false,
-        }
+        matches!(self.error_type, WorkflowErrorType::DomainError)
     }
 }
 
@@ -223,7 +217,7 @@ impl OperationResult {
         T: Serialize + Clone,
     {
         Ok(Self {
-            result: serde_json::to_value(result.clone())?,
+            result: serde_json::to_value(result)?,
             iteration,
             operation_name,
             created_at: Utc::now(),
@@ -536,21 +530,21 @@ impl WorkflowInnerState {
         }
     }
 
-    pub fn increase_iteration_counter(&self, operation_name: &String) {
+    pub fn increase_iteration_counter(&self, operation_name: &str) {
         let mut guard = self.iteration_counter_map.lock().unwrap();
         let count = {
-            if let Some(c) = guard.get(operation_name.as_str()) {
-                c.clone()
+            if let Some(c) = guard.get(operation_name) {
+                *c
             } else {
                 0
             }
         };
-        guard.insert(operation_name.clone(), count + 1);
+        guard.insert(operation_name.to_string(), count + 1);
     }
 
-    pub fn iteration_counter(&self, operation_name: &String) -> usize {
+    pub fn iteration_counter(&self, operation_name: &str) -> usize {
         let guard = self.iteration_counter_map.lock().unwrap();
-        guard.get(operation_name.as_str()).map_or(0, |v| v.clone())
+        guard.get(operation_name).map_or(0, |v| *v)
     }
 
     pub fn find_execution_result(
@@ -726,7 +720,7 @@ pub mod tests {
             id: Uuid::new_v4(),
             name: "test".to_string(),
             created_at: Utc::now(),
-            context: context,
+            context,
             correlation_id: "test".to_string(),
             status: WorkflowStatus::Created,
         })

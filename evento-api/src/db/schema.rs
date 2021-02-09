@@ -37,8 +37,4 @@ table! {
     }
 }
 
-allow_tables_to_appear_in_same_query!(
-    execution_results,
-    operations_queue,
-    workflows,
-);
+allow_tables_to_appear_in_same_query!(execution_results, operations_queue, workflows,);

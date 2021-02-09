@@ -82,33 +82,27 @@ impl AsyncWorkflowRunner {
                             // poisoned if the runner panics.
                             another_rx_clone.lock().unwrap().recv()
                         };
-                        match recv {
-                            Ok((data, result_sender)) => {
-                                info!("New request to process: {:?}", data);
-                                match Self::run_internal(
-                                    another_state_clone.clone(),
-                                    data,
-                                    another_registry_clone.clone(),
-                                ) {
-                                    Ok(result) => {
-                                        if let Err(e) = result_sender.send(Ok(result.clone())) {
-                                            error!("Unable to send result back to caller. result={:?}, error={:?}", result, e);
-                                        }
-                                        log::debug!("Successfully ran workflow.");
+                        if let Ok((data, result_sender)) = recv {
+                            info!("New request to process: {:?}", data);
+                            match Self::run_internal(
+                                another_state_clone.clone(),
+                                data,
+                                another_registry_clone.clone(),
+                            ) {
+                                Ok(result) => {
+                                    if let Err(e) = result_sender.send(Ok(result.clone())) {
+                                        error!("Unable to send result back to caller. result={:?}, error={:?}", result, e);
                                     }
-                                    Err(err) => {
-                                        if let Err(e) = result_sender.send(Err(err.clone())) {
-                                            error!(
-                                                "Unable to send response to caller. error={:?}",
-                                                e
-                                            );
-                                        }
-                                        error!("Unexpected workflow run error. error={:?}", err);
+                                    log::debug!("Successfully ran workflow.");
+                                }
+                                Err(err) => {
+                                    if let Err(e) = result_sender.send(Err(err.clone())) {
+                                        error!("Unable to send response to caller. error={:?}", e);
                                     }
+                                    error!("Unexpected workflow run error. error={:?}", err);
                                 }
                             }
-                            Err(_) => {}
-                        };
+                        }
                     }
                 });
                 if let Err(err) = handle.join() {
@@ -130,7 +124,7 @@ impl AsyncWorkflowRunner {
             stop_clone.store(2, Ordering::SeqCst);
         });
         Self {
-            _state: state.clone(),
+            _state: state,
             _handle: main_handle,
             sender: Arc::new(Mutex::new(sender)),
             _workflow_registry: workflow_registry,
@@ -147,10 +141,7 @@ impl AsyncWorkflowRunner {
         let workflow_data = state
             .store
             .get_workflow(workflow_data.id)?
-            .ok_or(format_err!(
-                "Unable to find workflow with id {}",
-                workflow_data.id,
-            ))?;
+            .ok_or_else(|| format_err!("Unable to find workflow with id {}", workflow_data.id,))?;
         let operation_results = state.store.get_operation_results(workflow_data.id)?;
         log::debug!("Running workflow with results={:?}", operation_results);
         let workflow = workflow_registry.create_workflow(
@@ -209,7 +200,7 @@ impl AsyncWorkflowRunner {
             }
             Ok(WorkflowStatus::WaitForExternal((input, timeout, external_key))) => {
                 let mut ext_input = input.clone();
-                ext_input.external_key = Some(external_key.clone());
+                ext_input.external_key = Some(*external_key);
                 info!(
                     "Workflow has returned a wait. id={}, input={:?}, timeout={:?}",
                     workflow_data.id, ext_input, timeout
@@ -219,9 +210,9 @@ impl AsyncWorkflowRunner {
                     .queue_operation(
                         OperationExecutionData {
                             workflow_id: workflow_data.id,
-                            correlation_id: workflow_data.correlation_id.clone(),
+                            correlation_id: workflow_data.correlation_id,
                             retry_count: None,
-                            input: ext_input.clone(),
+                            input: ext_input,
                         },
                         timeout.map_or(*INFINITE_WAIT, |t| t),
                     )
@@ -294,14 +285,14 @@ pub mod tests {
         let state = create_test_state();
         state
             .store
-            .create_workflow(wf_name.clone(), wf_id, corr_id.clone(), wf_context)
+            .create_workflow(wf_name.clone(), wf_id, corr_id, wf_context)
             .unwrap();
         let runner = AsyncWorkflowRunner::new(state.clone(), Arc::new(registry));
 
         let result = runner
             .run(WorkflowData {
                 id: wf_id,
-                name: wf_name.clone(),
+                name: wf_name,
                 correlation_id: "test".to_string(),
                 status: WorkflowStatus::Created,
                 created_at: Utc::now(),
@@ -309,7 +300,7 @@ pub mod tests {
             })
             .unwrap();
         assert!(matches!(result, WorkflowStatus::Completed));
-        wait_for_workflow_to_complete(wf_id, state.clone(), Duration::from_secs(3)).unwrap();
+        wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(3)).unwrap();
         runner.stop().unwrap();
     }
 
@@ -331,13 +322,13 @@ pub mod tests {
         let state = create_test_state();
         state
             .store
-            .create_workflow(wf_name.clone(), wf_id, corr_id.clone(), wf_context)
+            .create_workflow(wf_name.clone(), wf_id, corr_id, wf_context)
             .unwrap();
-        let runner = AsyncWorkflowRunner::new(state.clone(), Arc::new(registry));
+        let runner = AsyncWorkflowRunner::new(state, Arc::new(registry));
 
         let result = runner.run(WorkflowData {
             id: wf_id,
-            name: wf_name.clone(),
+            name: wf_name,
             correlation_id: "test".to_string(),
             status: WorkflowStatus::Created,
             created_at: Utc::now(),

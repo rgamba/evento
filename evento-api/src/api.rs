@@ -113,7 +113,7 @@ impl WorkflowFacade {
             })?;
         self.operation_executor
             .validate_external_input(
-                operation_data.input.operation_name.clone(),
+                operation_data.input.operation_name,
                 external_input_payload.clone(),
             )
             .map_err(|err| {
