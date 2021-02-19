@@ -219,7 +219,7 @@ impl Store for SqlStore {
             let new_input_value = serde_json::to_value(new_input)
                 .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))?;
             diesel::update(operations_queue.filter(external_key.eq(external_key_)))
-                .set((input.eq(new_input_value),))
+                .set((input.eq(new_input_value), next_run_date.eq(Utc::now())))
                 .get_result::<OperationQueueDTO>(&con)
         })?;
         Ok(dto.try_into()?)
@@ -356,7 +356,7 @@ pub mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    fn create_store() -> SqlStore {
+    pub fn create_store() -> SqlStore {
         SqlStore::new_with_pool(new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap())
     }
 

@@ -1,5 +1,6 @@
 use crate as evento_api;
 use crate::api::WorkflowFacade;
+use crate::db::sql_store::tests::create_store;
 use crate::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
 use crate::runners::tests::wait_for_workflow_to_complete;
 use crate::runners::AsyncWorkflowRunner;
@@ -22,7 +23,7 @@ fn integration_tests() {
     env_logger::try_init().unwrap();
 
     let state = State {
-        store: Arc::new(InMemoryStore::default()),
+        store: Arc::new(create_store()),
     };
     let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
     factories.insert(
