@@ -361,6 +361,45 @@ pub mod tests {
     }
 
     #[test]
+    fn test_fetch() {
+        let item = OperationExecutionData {
+            workflow_id: Uuid::nil(),
+            correlation_id: String::new(),
+            retry_count: None,
+            input: OperationInput::new(
+                "wf".to_string(),
+                "operation".to_string(),
+                0,
+                serde_json::Value::Null,
+            )
+            .unwrap(),
+        };
+        let store = create_store();
+        let now = Utc::now();
+        store.queue_operation(item, now).unwrap();
+        let result = store.fetch_operations(now).unwrap();
+        assert_eq!(1, result.len());
+        // Checking immediately for the same elements should not return them, allowing some time for
+        // the caller to process and dequeue (or requeue) them.
+        let result = store.fetch_operations(now).unwrap();
+        assert!(result.is_empty());
+        // Checking after the safe retry period should return the same element again
+        let result = store
+            .fetch_operations(now.checked_add_signed(*SAFE_RETRY_DURATION).unwrap())
+            .unwrap();
+        assert_eq!(1, result.len());
+        // Dequeue the element
+        store
+            .dequeue_operation(Uuid::nil(), "operation".to_string(), 0)
+            .unwrap();
+        // Checking after the sage retry period should not yield anything
+        let result = store
+            .fetch_operations(now.checked_add_signed(*SAFE_RETRY_DURATION).unwrap())
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn test_sql_store() {
         let wf_name = "test".to_string();
         let wf_id = Uuid::new_v4();

@@ -84,7 +84,7 @@ impl Workflow for WaitWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
         run!(self, A<bool>(true));
         let timeout = Utc::now()
-            .checked_add_signed(chrono::Duration::hours(1))
+            .checked_add_signed(chrono::Duration::seconds(20))
             .unwrap();
         wait_for_external!(self, A<bool>(true), timeout, Uuid::nil());
         run!(self, A<bool>(true));
