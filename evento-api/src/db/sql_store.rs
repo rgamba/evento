@@ -1,5 +1,5 @@
 use crate::db::models::{ExecutionResultDTO, OperationQueueDTO, WorkflowDTO};
-use crate::state::{OperationExecutionData, Store, SAFE_RETRY_DURATION};
+use crate::state::{OperationExecutionData, Store, WorkflowFilter, SAFE_RETRY_DURATION};
 use crate::{
     CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
     WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
@@ -74,14 +74,15 @@ impl Store for SqlStore {
         context: WorkflowContext,
     ) -> Result<WorkflowData> {
         use crate::db::schema::workflows;
-        let status = serde_json::to_value(WorkflowStatus::Created).unwrap();
+        let status = serde_json::to_value(WorkflowStatus::Created)?;
         let data = WorkflowDTO {
             id: workflow_id,
             name: workflow_name,
             correlation_id,
-            status: serde_json::to_string(&status)?,
+            status: WorkflowStatus::Created.to_string_without_data(),
             created_at: Utc::now(),
             context,
+            status_data: Some(status),
         };
         diesel::insert_into(workflows::table)
             .values(&data)
@@ -243,32 +244,58 @@ impl Store for SqlStore {
     fn complete_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
         let new_status = serde_json::to_value(WorkflowStatus::Completed).unwrap();
-        diesel::update(workflows.find(workflow_id))
-            .set(status.eq(serde_json::to_string(&new_status).unwrap()))
-            .get_result::<WorkflowDTO>(&self.db_pool.get()?)
-            .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        diesel::update(
+            workflows
+                .filter(id.eq(workflow_id))
+                .filter(status.ne_all(WorkflowStatus::get_terminal_status())),
+        )
+        .set((
+            status.eq(WorkflowStatus::Completed.to_string_without_data()),
+            status_data.eq(new_status),
+        ))
+        .get_result::<WorkflowDTO>(&self.db_pool.get()?)
+        .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
         Ok(())
     }
 
     fn complete_workflow_with_error(&self, workflow_id: WorkflowId, error: String) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
-        let new_status =
-            serde_json::to_value(WorkflowStatus::CompletedWithError(error.into())).unwrap();
-        diesel::update(workflows.find(workflow_id))
-            .set(status.eq(serde_json::to_string(&new_status).unwrap()))
-            .get_result::<WorkflowDTO>(&self.db_pool.get()?)
-            .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        let new_status = WorkflowStatus::CompletedWithError(error.into());
+        let new_status_value = serde_json::to_value(new_status.clone()).unwrap();
+        diesel::update(
+            workflows
+                .filter(id.eq(workflow_id))
+                .filter(status.ne_all(WorkflowStatus::get_terminal_status())),
+        )
+        .set((
+            status.eq(new_status.to_string_without_data()),
+            status_data.eq(new_status_value),
+        ))
+        .get_result::<WorkflowDTO>(&self.db_pool.get()?)
+        .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
         Ok(())
     }
 
     fn cancel_workflow(&self, workflow_id: WorkflowId, _reason: String) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
-        let new_status = serde_json::to_value(WorkflowStatus::Cancelled).unwrap();
-        diesel::update(workflows.find(workflow_id))
-            .set(status.eq(serde_json::to_string(&new_status).unwrap()))
-            .get_result::<WorkflowDTO>(&self.db_pool.get()?)
-            .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        let new_status = WorkflowStatus::Cancelled;
+        let new_status_value = serde_json::to_value(new_status.clone()).unwrap();
+        diesel::update(
+            workflows
+                .filter(id.eq(workflow_id))
+                .filter(status.ne_all(WorkflowStatus::get_terminal_status())),
+        )
+        .set((
+            status.eq(new_status.to_string_without_data()),
+            status_data.eq(new_status_value),
+        ))
+        .get_result::<WorkflowDTO>(&self.db_pool.get()?)
+        .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
         Ok(())
+    }
+
+    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()> {
+        unimplemented!()
     }
 
     fn abort_workflow_with_error(
@@ -277,11 +304,19 @@ impl Store for SqlStore {
         error: WorkflowError,
     ) -> Result<()> {
         use crate::db::schema::workflows::dsl::*;
-        let new_status = serde_json::to_value(WorkflowStatus::Error(error)).unwrap();
-        diesel::update(workflows.find(workflow_id))
-            .set(status.eq(serde_json::to_string(&new_status).unwrap()))
-            .get_result::<WorkflowDTO>(&self.db_pool.get()?)
-            .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        let new_status = WorkflowStatus::Error(error);
+        let new_status_value = serde_json::to_value(new_status.clone()).unwrap();
+        diesel::update(
+            workflows
+                .filter(id.eq(workflow_id))
+                .filter(status.ne_all(WorkflowStatus::get_terminal_status())),
+        )
+        .set((
+            status.eq(new_status.to_string_without_data()),
+            status_data.eq(new_status_value),
+        ))
+        .get_result::<WorkflowDTO>(&self.db_pool.get()?)
+        .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
         Ok(())
     }
 
@@ -343,6 +378,24 @@ impl Store for SqlStore {
             .map_err(|err| format_err!("Unable to queue operations: {}", err))?;
         Ok(())
     }
+
+    fn get_workflows(&self, _filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
+        use crate::db::schema::workflows::dsl::*;
+        Ok(workflows
+            .load::<WorkflowDTO>(&self.db_pool.get()?)?
+            .into_iter()
+            .map(|wf| WorkflowDTO::try_into(wf).unwrap())
+            .collect::<Vec<_>>())
+    }
+
+    fn delete_operation_results(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
+    ) -> Result<()> {
+        unimplemented!()
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +453,27 @@ pub mod tests {
     }
 
     #[test]
+    fn test_non_active_workflows_cannot_be_modified() {
+        let wf_name = "test".to_string();
+        let store = create_store();
+        let wf_id = Uuid::new_v4();
+        let correlation_id = "correlationid".to_string();
+        let context = json!({"name": "ricardo"});
+        store
+            .create_workflow(
+                wf_name.clone(),
+                wf_id,
+                correlation_id.clone(),
+                context.clone(),
+            )
+            .unwrap();
+        store.complete_workflow(wf_id).unwrap();
+        let result =
+            store.abort_workflow_with_error(wf_id, WorkflowError::internal_error(String::new()));
+        assert!(result.is_err())
+    }
+
+    #[test]
     fn test_sql_store() {
         let wf_name = "test".to_string();
         let wf_id = Uuid::new_v4();
@@ -429,11 +503,28 @@ pub mod tests {
         assert!(matches!(wf.status, WorkflowStatus::Completed));
         // Store execution result
         let result_content = "test_result".to_string();
+        let input = OperationInput::new(
+            wf_name.clone(),
+            operation_name.clone(),
+            0,
+            result_content.clone(),
+        )
+        .unwrap();
         let result_content_2 = "test_result2".to_string();
-        let operation_result =
-            OperationResult::new(result_content.clone(), 0, operation_name.clone()).unwrap();
-        let operation_result_2 =
-            OperationResult::new(result_content_2.clone(), 1, operation_name.clone()).unwrap();
+        let operation_result = OperationResult::new(
+            result_content.clone(),
+            0,
+            operation_name.clone(),
+            input.clone(),
+        )
+        .unwrap();
+        let operation_result_2 = OperationResult::new(
+            result_content_2.clone(),
+            1,
+            operation_name.clone(),
+            input.clone(),
+        )
+        .unwrap();
         store
             .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
             .unwrap();
@@ -448,13 +539,7 @@ pub mod tests {
             workflow_id: wf_id,
             correlation_id: String::new(),
             retry_count: None,
-            input: OperationInput::new(
-                wf_name.clone(),
-                operation_name.clone(),
-                0,
-                result_content.clone(),
-            )
-            .unwrap(),
+            input,
         };
         // Try fetch an element with a run_date greater than current time
         let now = Utc::now();

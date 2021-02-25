@@ -8,6 +8,7 @@ table! {
         result -> Json,
         created_at -> Timestamptz,
         error -> Nullable<Json>,
+        operation_input -> Json,
     }
 }
 
@@ -34,7 +35,12 @@ table! {
         status -> Varchar,
         context -> Json,
         created_at -> Timestamptz,
+        status_data -> Nullable<Json>,
     }
 }
 
-allow_tables_to_appear_in_same_query!(execution_results, operations_queue, workflows,);
+allow_tables_to_appear_in_same_query!(
+    execution_results,
+    operations_queue,
+    workflows,
+);

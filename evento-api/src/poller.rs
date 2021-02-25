@@ -97,11 +97,8 @@ fn poll(
                 thread::sleep(Duration::from_millis(1000));
                 return;
             }
-            info!(
-                "Fetched {} new operations. operations={:?}",
-                operations.len(),
-                operations
-            );
+            info!("Fetched {} new operations", operations.len(),);
+            log::debug!("Fetched operations: {:?}", operations);
             for operation in operations {
                 match executor.execute(operation.input.clone()) {
                     Ok(operation_result) => {
@@ -180,10 +177,7 @@ fn handle_execution_failure(
     error: WorkflowError,
     retry_strategy: Arc<dyn RetryStrategy>,
 ) {
-    warn!(
-        "Operation execution failed. error={:?}, data={:?}",
-        error, data
-    );
+    warn!("Operation execution failed. error={:?}", error);
     let count = data.retry_count.unwrap_or(1);
     let new_run_date = retry_strategy
         .next_retry_interval(count as u64)
@@ -293,9 +287,21 @@ mod test {
             serde_json::Value::String("testinput".to_string()),
         )
         .unwrap();
+        let test_input = OperationInput::new(
+            "test".to_string(),
+            "test".to_string(),
+            0,
+            serde_json::Value::Null,
+        )
+        .unwrap();
         let wf_id = Uuid::new_v4();
-        let expected_result =
-            OperationResult::new(String::from("Good"), 0, String::from("operation_test")).unwrap();
+        let expected_result = OperationResult::new(
+            String::from("Good"),
+            0,
+            String::from("operation_test"),
+            test_input,
+        )
+        .unwrap();
         let result_clone = expected_result.clone();
         let mut workflow_runner = MockWorkflowRunner::new();
         workflow_runner

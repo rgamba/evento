@@ -83,7 +83,8 @@ impl AsyncWorkflowRunner {
                             another_rx_clone.lock().unwrap().recv()
                         };
                         if let Ok((data, result_sender)) = recv {
-                            info!("New request to process: {:?}", data);
+                            info!("New request to process workflow id: {:?}", data.id);
+                            log::debug!("Workflow data to be processed: {:?}", data);
                             match Self::run_internal(
                                 another_state_clone.clone(),
                                 data,
@@ -143,7 +144,8 @@ impl AsyncWorkflowRunner {
             .get_workflow(workflow_data.id)?
             .ok_or_else(|| format_err!("Unable to find workflow with id {}", workflow_data.id,))?;
         let operation_results = state.store.get_operation_results(workflow_data.id)?;
-        log::debug!("Running workflow with results={:?}", operation_results);
+        log::info!("Running workflow with id: {}", workflow_data.id);
+        log::debug!("Injecting results: {:?}", operation_results);
         let workflow = workflow_registry.create_workflow(
             workflow_data.name.clone(),
             workflow_data.id,
@@ -178,8 +180,14 @@ impl AsyncWorkflowRunner {
             }
             Ok(WorkflowStatus::RunNext(inputs)) => {
                 info!(
-                    "Workflow has returned next operations. id={}, next_operations={:?}",
-                    workflow_data.id, inputs
+                    "Workflow has returned next operations. workflow_id={}, count={}",
+                    workflow_data.id,
+                    inputs.len()
+                );
+                log::debug!(
+                    "Next operations. id={}, next_operations={:?}",
+                    workflow_data.id,
+                    inputs
                 );
                 state.store.queue_all_operations(
                     inputs
@@ -202,9 +210,11 @@ impl AsyncWorkflowRunner {
                 let mut ext_input = input.clone();
                 ext_input.external_key = Some(*external_key);
                 info!(
-                    "Workflow has returned a wait. id={}, input={:?}, timeout={:?}",
-                    workflow_data.id, ext_input, timeout
+                    "Workflow has returned a wait. id={}, timeout={:?}",
+                    workflow_data.id, timeout
                 );
+                log::debug!("Workflow input: {:?}", ext_input);
+
                 state
                     .store
                     .queue_operation(

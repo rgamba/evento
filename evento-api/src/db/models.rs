@@ -4,7 +4,7 @@ use crate::state::OperationExecutionData;
 use crate::{
     OperationName, OperationResult, WorkflowData, WorkflowError, WorkflowId, WorkflowStatus,
 };
-use anyhow::{bail, Context};
+use anyhow::{bail, ensure, format_err, Context};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom, TryInto};
@@ -31,18 +31,34 @@ pub struct WorkflowDTO {
     pub status: String,
     pub context: serde_json::Value,
     pub created_at: DateTime<Utc>,
+    pub status_data: Option<serde_json::Value>,
 }
 
 impl TryInto<WorkflowData> for WorkflowDTO {
     type Error = anyhow::Error;
 
     fn try_into(self) -> Result<WorkflowData, Self::Error> {
+        let status = match self.status.as_str() {
+            "Created" => WorkflowStatus::Created,
+            "Completed" => WorkflowStatus::Completed,
+            "CompletedWithError" | "WaitForExternal" | "RunNext" | "Error" => {
+                serde_json::from_value::<WorkflowStatus>(
+                    self.status_data
+                        .ok_or_else(|| format_err!("status_data is required to be not null"))?,
+                )?
+            }
+            "Cancelled" => WorkflowStatus::Cancelled,
+            _ => bail!("Invalid workflow status provided: {:?}", self.status),
+        };
+        ensure!(
+            self.status == status.to_string_without_data(),
+            "Status and status data are inconsistent!"
+        );
         Ok(WorkflowData {
             id: self.id,
             name: self.name.clone(),
             correlation_id: self.correlation_id,
-            status: serde_json::from_str::<WorkflowStatus>(self.status.as_str())
-                .context("Unable to deserialize WorkflowStatus")?,
+            status,
             created_at: self.created_at,
             context: self.context,
         })
@@ -132,6 +148,7 @@ pub struct ExecutionResultDTO {
     pub result: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub error: Option<serde_json::Value>,
+    pub operation_input: serde_json::Value,
 }
 
 impl ExecutionResultDTO {
@@ -153,6 +170,7 @@ impl ExecutionResultDTO {
                 iteration: self.iteration as usize,
                 created_at: self.created_at,
                 operation_name: self.operation_name.clone(),
+                operation_input: serde_json::from_value(self.operation_input.clone())?,
             }))
         }
     }
@@ -190,10 +208,15 @@ impl
                 serde_json::Value::Null
             },
             created_at: Utc::now(),
-            error: if let Err(err) = value {
+            error: if let Err(err) = value.clone() {
                 Some(serde_json::to_value(err).unwrap())
             } else {
                 None
+            },
+            operation_input: if let Ok(r) = value {
+                serde_json::to_value(r.operation_input)?
+            } else {
+                serde_json::Value::Null
             },
         })
     }

@@ -6,7 +6,8 @@ CREATE TABLE execution_results (
     iteration integer NOT NULL DEFAULT 0,
     result json NOT NULL,
     created_at timestamp with time zone NOT NULL,
-    error json
+    error json,
+    operation_input json NOT NULL
 );
 
 -- Indices -------------------------------------------------------
@@ -41,7 +42,7 @@ CREATE TABLE workflows (
     id uuid PRIMARY KEY,
     correlation_id character varying NOT NULL,
     name character varying NOT NULL,
-    status character varying(50) NOT NULL,
+    status character varying(200) NOT NULL,
     context json NOT NULL,
     created_at timestamp with time zone NOT NULL
 );

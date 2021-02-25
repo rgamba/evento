@@ -1,5 +1,5 @@
 use actix_web::rt::blocking::run;
-use anyhow::Result;
+use anyhow::{format_err, Result};
 use chrono::Utc;
 use evento_api::{
     parse_input, run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError,
@@ -53,12 +53,15 @@ impl Operation for FetchUsers {
                 .map_err(|e| WorkflowError::retriable_domain_error(format!("{:?}", e)))?
                 .json()
                 .map_err(|e| WorkflowError::retriable_domain_error(format!("{:?}", e)))?;
-        let results: Vec<User> = body["data"]
+        let results = body["data"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| serde_json::from_value(v.clone()).unwrap())
-            .collect();
+            .map(|v| {
+                serde_json::from_value(v.clone())
+                    .map_err(|err| format_err!("Unable to convert user: {:?}", err))
+            })
+            .collect::<Result<Vec<User>>>()?;
         let v = serde_json::to_value(results).unwrap();
         Ok(v)
     }
@@ -102,7 +105,7 @@ impl Operation for WaitAndFilterUsers {
         let age: u64 = serde_json::from_value(input.external_input.unwrap()).unwrap();
         let result = users
             .into_iter()
-            .filter(|u| u.employee_age >= age)
+            .filter(|u| u.employee_age.parse::<u64>().unwrap() >= age)
             .collect::<Vec<User>>();
         Ok(serde_json::to_value(result).unwrap())
     }
@@ -144,9 +147,9 @@ impl Operation for StoreResult {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct User {
-    id: u64,
+    id: String,
     employee_name: String,
-    employee_salary: u64,
-    employee_age: u64,
+    employee_salary: String,
+    employee_age: String,
     profile_image: String,
 }

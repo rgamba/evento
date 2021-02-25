@@ -3,6 +3,7 @@ use actix_web::{get, middleware, web, App, HttpServer, Responder};
 use anyhow::format_err;
 use chrono::Utc;
 use demo::{FetchUsers, StoreResult, TestContext, TestWorkflowFactory, WaitAndFilterUsers};
+use evento_api::admin::Admin;
 use evento_api::api::WorkflowFacade;
 use evento_api::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
 use evento_api::runners::AsyncWorkflowRunner;
@@ -41,7 +42,7 @@ async fn complete_external(
     Ok(Json(()))
 }
 
-fn create_facade() -> AppFacade {
+fn create_facade() -> WorkflowFacade {
     let state = State {
         store: Arc::new(InMemoryStore::default()),
     };
@@ -57,8 +58,7 @@ fn create_facade() -> AppFacade {
     );
     let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    let facade = WorkflowFacade::new(state.clone(), registry.clone(), executor.clone(), runner);
-    AppFacade::new(facade)
+    WorkflowFacade::new(state.clone(), registry.clone(), executor.clone(), runner)
 }
 
 #[actix_web::main]
@@ -67,6 +67,9 @@ async fn main() -> std::io::Result<()> {
 
     let facade = create_facade();
 
+    Admin::new(facade.clone(), 8082).await.unwrap();
+
+    let facade = AppFacade::new(facade);
     HttpServer::new(move || {
         App::new()
             .wrap(middleware::Logger::default())

@@ -89,6 +89,7 @@ impl OperationExecutor for SimpleOperationExecutor {
                 serde_json::to_value(res).unwrap(),
                 input.iteration,
                 operation.name().into(),
+                input.clone(),
             )
             .unwrap()),
             Err(err) => Err(err),

@@ -2,7 +2,7 @@
 
 #[macro_use]
 extern crate diesel;
-mod admin;
+pub mod admin;
 pub mod api;
 pub mod db;
 #[cfg(test)]
@@ -91,6 +91,41 @@ pub enum WorkflowStatus {
     Error(WorkflowError),
     /// The workflow was manually cancelled.
     Cancelled,
+}
+
+impl WorkflowStatus {
+    pub fn is_active(&self) -> bool {
+        match *self {
+            Self::Completed | Self::CompletedWithError(_) | Self::Cancelled | Self::Error(_) => {
+                false
+            }
+            _ => true,
+        }
+    }
+}
+
+impl WorkflowStatus {
+    pub fn get_terminal_status() -> Vec<String> {
+        vec![
+            "Completed".to_string(),
+            "CompletedWithError".to_string(),
+            "Cancelled".to_string(),
+            "Error".to_string(),
+        ]
+    }
+
+    pub fn to_string_without_data(&self) -> String {
+        let s = match *self {
+            Self::Created => "Created",
+            Self::Completed => "Completed",
+            Self::CompletedWithError(_) => "CompletedWithError",
+            Self::Error(_) => "Error",
+            Self::Cancelled => "Cancelled",
+            Self::RunNext(_) => "RunNext",
+            Self::WaitForExternal(_) => "WaitForExternal",
+        };
+        String::from(s)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -203,16 +238,23 @@ pub trait Operation: Send + Sync {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct OperationResult {
     result: serde_json::Value,
     pub iteration: usize,
     pub created_at: DateTime<Utc>,
     pub operation_name: String,
+    /// The input that produced the result.
+    pub operation_input: OperationInput,
 }
 
 impl OperationResult {
-    pub fn new<T>(result: T, iteration: usize, operation_name: String) -> Result<Self>
+    pub fn new<T>(
+        result: T,
+        iteration: usize,
+        operation_name: String,
+        operation_input: OperationInput,
+    ) -> Result<Self>
     where
         T: Serialize + Clone,
     {
@@ -221,20 +263,8 @@ impl OperationResult {
             iteration,
             operation_name,
             created_at: Utc::now(),
+            operation_input,
         })
-    }
-
-    pub fn new_from_value(
-        result: serde_json::Value,
-        iteration: usize,
-        operation_name: String,
-    ) -> Self {
-        Self {
-            result,
-            iteration,
-            operation_name,
-            created_at: Utc::now(),
-        }
     }
 
     pub fn result<T: DeserializeOwned>(&self) -> Result<T> {
@@ -696,6 +726,7 @@ pub mod tests {
                     serde_json::to_value(res).unwrap(),
                     input.iteration,
                     operation.name().into(),
+                    input.clone(),
                 )
                 .unwrap()),
                 Err(err) => Err(err),

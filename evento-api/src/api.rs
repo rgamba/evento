@@ -1,8 +1,9 @@
 use crate::poller::{FixedRetryStrategy, Poller};
+use crate::state::WorkflowFilter;
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
-    OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
-    WorkflowStatus,
+    OperationResult, WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName,
+    WorkflowRunner, WorkflowStatus,
 };
 use crate::{OperationExecutor, WorkflowRegistry};
 use anyhow::{format_err, Result};
@@ -188,23 +189,59 @@ impl WorkflowFacade {
             })
     }
 
-    pub fn remove_operation_result(
-        &self,
-        _workflow_id: WorkflowId,
-        _operation_name: OperationName,
-        _iteration: OperationIteration,
-    ) -> Result<OperationResult> {
-        unimplemented!()
-    }
-
-    /// Schedule a workflow to be ran as soon as possible.
-    /// This function won't block until execution, actual execution will be done asynchronously.
+    /// Returns the execution traces for all operation executions, including both successful and
+    /// failed executions.
     ///
     /// # Arguments
     ///
     /// - `workflow_id` - The workflow ID
-    pub fn run_async(&self, _workflow_id: WorkflowId) -> Result<()> {
-        unimplemented!()
+    pub fn get_operation_execution_traces(
+        &self,
+        workflow_id: WorkflowId,
+    ) -> Result<Vec<Result<OperationResult, WorkflowError>>> {
+        self.state
+            .store
+            .get_operation_results_with_errors(workflow_id)
+            .map_err(|err| {
+                log::error!("Failed to get operation results. error={:?}", err);
+                format_err!("{:?}", err)
+            })
+    }
+
+    /// Replay the workflow starting from the given operation.
+    ///
+    /// This is a non-reversible operation, it will effectively delete ALL operation results
+    /// starting from the given operation onwards and will schedule the workflow
+    /// to be run as soon as possible.
+    pub fn replay(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: OperationIteration,
+    ) -> Result<()> {
+        self.state
+            .store
+            .delete_operation_results(workflow_id, operation_name, iteration)
+    }
+
+    /// Retry the workflow from the latest successful step.
+    ///
+    /// # Arguments
+    ///
+    /// - `workflow_id` - The workflow ID
+    pub fn retry(&self, workflow_id: WorkflowId) -> Result<()> {
+        let workflow = self
+            .state
+            .store
+            .get_workflow(workflow_id)?
+            .ok_or_else(|| format_err!("Invalid workflow ID"))?;
+        if !workflow.status.is_active() {
+            self.state.store.mark_active(workflow_id)?;
+        }
+        self.workflow_runner
+            .run(workflow)
+            .map_err(|e| format_err!("Workflow run returned the following error: {:?}", e))
+            .map(|_| ())
     }
 
     /// Cancel an active workflow.
@@ -215,6 +252,10 @@ impl WorkflowFacade {
     /// - `workflow_id` - The workflow ID    
     pub fn cancel_workflow(&self, _workflow_id: WorkflowId) -> Result<WorkflowData> {
         unimplemented!()
+    }
+
+    pub fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
+        self.state.store.get_workflows(filters)
     }
 
     pub fn stop(&self) -> Result<()> {

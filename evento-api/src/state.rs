@@ -5,8 +5,19 @@ use crate::{
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct WorkflowFilter {
+    pub name: Option<String>,
+    pub created_from: Option<DateTime<Utc>>,
+    pub created_to: Option<DateTime<Utc>>,
+    pub status: Option<WorkflowStatus>,
+    pub offset: Option<u32>,
+    pub limit: Option<u32>,
+}
 
 #[derive(Clone)]
 pub struct State {
@@ -46,6 +57,10 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<Result<OperationResult, WorkflowError>>>;
 
     /// Fetch operations that whose run_date is less or equal to the current now provided.
+    ///
+    /// A lease for the resulting operations will start. The caller must dequeue the operation
+    /// before the lease ends, otherwise, the operation(s) will be re-delivered to the caller on
+    /// subsequent calls to this function.
     fn fetch_operations(&self, current_now: DateTime<Utc>) -> Result<Vec<OperationExecutionData>>;
 
     fn count_queued_elements(&self) -> Result<u64>;
@@ -80,12 +95,23 @@ pub trait Store: Send + Sync {
     ) -> Result<()>;
 
     /// Update the given Workflow and mark it as completed.
+    /// If the workflow's status is not active, this will be a no-op.
     fn complete_workflow(&self, workflow_id: WorkflowId) -> Result<()>;
 
+    /// Complete the workflow with a domain-specific error.
+    /// If the workflow's status is not active, this will be a no-op.
     fn complete_workflow_with_error(&self, workflow_id: WorkflowId, error: String) -> Result<()>;
 
+    /// Manually cancel the workflow.
+    /// If the workflow's status is not active, this will be a no-op.
     fn cancel_workflow(&self, workflow_id: WorkflowId, reason: String) -> Result<()>;
 
+    /// Manually mark the workflow as active.
+    /// If the workflow's status is not active, this will be a no-op.
+    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()>;
+
+    /// Abort the workflow.
+    /// If the workflow's status is not active, this will be a no-op.
     fn abort_workflow_with_error(
         &self,
         workflow_id: WorkflowId,
@@ -101,6 +127,9 @@ pub trait Store: Send + Sync {
         run_date: DateTime<Utc>,
     ) -> Result<()>;
 
+    /// Dequeue and remove an operation from the queue.
+    /// This is typically performed once the operation has been executed so it doesn't get delivered
+    /// again.
     fn dequeue_operation(
         &self,
         workflow_id: WorkflowId,
@@ -114,6 +143,17 @@ pub trait Store: Send + Sync {
     fn queue_all_operations(
         &self,
         operations: Vec<(OperationExecutionData, DateTime<Utc>)>,
+    ) -> Result<()>;
+
+    fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>>;
+
+    /// Removes the operation result provided **and all subsequent operations** and
+    /// will schedule the workflow to run as soon as possible in atomic fashion.
+    fn delete_operation_results(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
     ) -> Result<()>;
 }
 
@@ -304,7 +344,10 @@ impl Store for InMemoryStore {
 
     fn complete_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
         let mut guard = self.workflows.lock().unwrap();
-        match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+        match guard
+            .iter_mut()
+            .find(|wf| wf.id == workflow_id && wf.status.is_active())
+        {
             Some(wf) => {
                 wf.status = WorkflowStatus::Completed;
                 Ok(())
@@ -313,9 +356,23 @@ impl Store for InMemoryStore {
         }
     }
 
-    fn complete_workflow_with_error(&self, workflow_id: WorkflowId, error: String) -> Result<()> {
+    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()> {
         let mut guard = self.workflows.lock().unwrap();
         match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+            Some(wf) => {
+                wf.status = WorkflowStatus::Created;
+                Ok(())
+            }
+            None => bail!("Unable to find workflow with id: {}", workflow_id),
+        }
+    }
+
+    fn complete_workflow_with_error(&self, workflow_id: WorkflowId, error: String) -> Result<()> {
+        let mut guard = self.workflows.lock().unwrap();
+        match guard
+            .iter_mut()
+            .find(|wf| wf.id == workflow_id && wf.status.is_active())
+        {
             Some(wf) => {
                 wf.status = WorkflowStatus::CompletedWithError(error.into());
                 Ok(())
@@ -334,7 +391,10 @@ impl Store for InMemoryStore {
         error: WorkflowError,
     ) -> Result<()> {
         let mut guard = self.workflows.lock().unwrap();
-        match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+        match guard
+            .iter_mut()
+            .find(|wf| wf.id == workflow_id && wf.status.is_active())
+        {
             Some(wf) => {
                 wf.status = WorkflowStatus::Error(error);
                 Ok(())
@@ -348,6 +408,14 @@ impl Store for InMemoryStore {
         execution_data: OperationExecutionData,
         run_date: DateTime<Utc>,
     ) -> Result<()> {
+        //TODO:this needs to check if the element is present and update it if it is.
+        {
+            self.dequeue_operation(
+                execution_data.workflow_id,
+                execution_data.input.operation_name.clone(),
+                execution_data.input.iteration,
+            );
+        }
         let mut guard = self.queue.lock().unwrap();
         guard.push((execution_data, run_date, Self::QUEUED));
         Ok(())
@@ -379,7 +447,63 @@ impl Store for InMemoryStore {
             })
             .ok_or_else(|| format_err!("Unable to find operation"))?;
         let (data, _, _) = guard.remove(index);
+        log::info!("Dequeued element. queue size={}", guard.len());
         Ok(data)
+    }
+
+    fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
+        let guard = self.workflows.lock().unwrap();
+        Ok(guard.iter().cloned().collect())
+    }
+
+    fn delete_operation_results(
+        &self,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
+    ) -> Result<()> {
+        let (_, deleted_result) = {
+            let mut guard = self.operation_results.lock().unwrap();
+            let results = guard.get(&workflow_id).unwrap();
+            let mut new_results = vec![];
+            let mut remove = false;
+            let mut element = None;
+            for (i, (operation_name_, result)) in results.iter().enumerate() {
+                if operation_name_ == &operation_name {
+                    if let Ok(r) = result {
+                        if r.iteration == iteration {
+                            element = Some((operation_name.clone(), r.clone()));
+                            break;
+                        }
+                    }
+                }
+                new_results.push((operation_name.clone(), result.clone()))
+            }
+            guard.insert(workflow_id, new_results);
+            element
+        }
+        .ok_or_else(|| format_err!("Unable to find operation"))?;
+        // Mark the wf as active
+        {
+            let mut guard = self.workflows.lock().unwrap();
+            match guard.iter_mut().find(|wf| wf.id == workflow_id) {
+                Some(wf) => {
+                    wf.status = WorkflowStatus::Created;
+                }
+                None => bail!("Unable to find workflow with id: {}", workflow_id),
+            };
+        }
+        // Now enqueue
+        self.queue_operation(
+            OperationExecutionData {
+                workflow_id,
+                correlation_id: "".to_string(),
+                retry_count: None,
+                input: deleted_result.operation_input,
+            },
+            Utc::now(),
+        )?;
+        Ok(())
     }
 }
 
@@ -394,6 +518,65 @@ pub mod tests {
         State {
             store: Arc::new(InMemoryStore::default()),
         }
+    }
+
+    #[test]
+    fn test_delete_operation_results() {
+        let wf_id = Uuid::new_v4();
+        let result_content = "test_result".to_string();
+        let operation_name = "test_operation".to_string();
+        let test_input = OperationInput::new(
+            "test".to_string(),
+            "test".to_string(),
+            0,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        let operation_result_1 = OperationResult::new(
+            result_content.clone(),
+            0,
+            operation_name.clone(),
+            test_input.clone(),
+        )
+        .unwrap();
+        let operation_result_2 = OperationResult::new(
+            result_content.clone(),
+            1,
+            operation_name.clone(),
+            test_input.clone(),
+        )
+        .unwrap();
+        let operation_result_3 = OperationResult::new(
+            result_content.clone(),
+            2,
+            operation_name.clone(),
+            test_input.clone(),
+        )
+        .unwrap();
+        let store = InMemoryStore::default();
+        store
+            .create_workflow(
+                "test".to_string(),
+                wf_id,
+                "test".to_string(),
+                serde_json::Value::Null,
+            )
+            .unwrap();
+        store
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_1))
+            .unwrap();
+        store
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
+            .unwrap();
+        store
+            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_3))
+            .unwrap();
+        store
+            .delete_operation_results(wf_id, operation_name, 1)
+            .unwrap();
+        let result = store.get_operation_results(wf_id).unwrap();
+        assert_eq!(1, result.len());
+        assert_eq!(0, result.get(0).unwrap().iteration);
     }
 
     #[test]
@@ -426,11 +609,28 @@ pub mod tests {
         assert!(matches!(wf.status, WorkflowStatus::Completed));
         // Store execution result
         let result_content = "test_result".to_string();
+        let input = OperationInput::new(
+            wf_name.clone(),
+            operation_name.clone(),
+            0,
+            result_content.clone(),
+        )
+        .unwrap();
         let result_content_2 = "test_result2".to_string();
-        let operation_result =
-            OperationResult::new(result_content.clone(), 0, operation_name.clone()).unwrap();
-        let operation_result_2 =
-            OperationResult::new(result_content_2.clone(), 0, operation_name.clone()).unwrap();
+        let operation_result = OperationResult::new(
+            result_content.clone(),
+            0,
+            operation_name.clone(),
+            input.clone(),
+        )
+        .unwrap();
+        let operation_result_2 = OperationResult::new(
+            result_content_2.clone(),
+            0,
+            operation_name.clone(),
+            input.clone(),
+        )
+        .unwrap();
         store
             .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
             .unwrap();
@@ -445,13 +645,7 @@ pub mod tests {
             workflow_id: wf_id,
             correlation_id: String::new(),
             retry_count: None,
-            input: OperationInput::new(
-                wf_name.clone(),
-                operation_name.clone(),
-                0,
-                result_content.clone(),
-            )
-            .unwrap(),
+            input,
         };
         // Try fetch an element with a run_date greater than current time
         let now = Utc::now();
