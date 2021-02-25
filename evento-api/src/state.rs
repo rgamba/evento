@@ -203,7 +203,7 @@ impl Store for InMemoryStore {
             id: workflow_id,
             name: workflow_name,
             correlation_id,
-            status: WorkflowStatus::Created,
+            status: WorkflowStatus::active(),
             created_at: Utc::now(),
             context,
         };
@@ -360,7 +360,7 @@ impl Store for InMemoryStore {
         let mut guard = self.workflows.lock().unwrap();
         match guard.iter_mut().find(|wf| wf.id == workflow_id) {
             Some(wf) => {
-                wf.status = WorkflowStatus::Created;
+                wf.status = WorkflowStatus::active();
                 Ok(())
             }
             None => bail!("Unable to find workflow with id: {}", workflow_id),
@@ -488,7 +488,7 @@ impl Store for InMemoryStore {
             let mut guard = self.workflows.lock().unwrap();
             match guard.iter_mut().find(|wf| wf.id == workflow_id) {
                 Some(wf) => {
-                    wf.status = WorkflowStatus::Created;
+                    wf.status = WorkflowStatus::active();
                 }
                 None => bail!("Unable to find workflow with id: {}", workflow_id),
             };
@@ -602,7 +602,7 @@ pub mod tests {
         assert_eq!(wf.name, wf_name);
         assert_eq!(wf.context, context);
         assert_eq!(wf.correlation_id, correlation_id);
-        assert!(matches!(wf.status, WorkflowStatus::Created));
+        assert!(matches!(wf.status, WorkflowStatus::Active(_)));
         // Mark as completed
         store.complete_workflow(wf_id).unwrap();
         let wf = store.get_workflow(wf_id).unwrap().unwrap();

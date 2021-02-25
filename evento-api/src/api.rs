@@ -78,7 +78,7 @@ impl WorkflowFacade {
                 id: workflow_id,
                 name: workflow_name,
                 correlation_id,
-                status: WorkflowStatus::Created,
+                status: WorkflowStatus::active(),
                 created_at: Utc::now(),
                 context,
             })

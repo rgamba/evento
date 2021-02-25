@@ -5,8 +5,6 @@ extern crate diesel;
 pub mod admin;
 pub mod api;
 pub mod db;
-#[cfg(test)]
-mod integ_tests;
 pub mod poller;
 pub mod registry;
 pub mod runners;
@@ -72,8 +70,9 @@ pub struct WorkflowData {
 /// Represents the status of a Workflow at a given point in time of the execution.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum WorkflowStatus {
-    /// Workflow has just been created and has not been executed for the first time yet.
-    Created,
+    /// Workflow is active.
+    /// The vector of [OperationInput] represent the operations that should be run next.
+    Active(Vec<OperationInput>),
     /// Workflow completed successfully happy path.
     Completed,
     /// Workflow completed but exercised an error scenario.
@@ -83,8 +82,6 @@ pub enum WorkflowStatus {
     /// In case the `Option` datetime is provided, the external input must arrive
     /// before that time, otherwise the task will time out.
     WaitForExternal((OperationInput, Option<DateTime<Utc>>, ExternalInputKey)),
-    /// Run the next activities in order to proceed with workflow execution.
-    RunNext(Vec<OperationInput>),
     /// Unexpected error happened.
     /// This typically means an infrastructure error raised by an operation not being
     /// able to complete successfully or the number of retries have reached max.
@@ -94,6 +91,10 @@ pub enum WorkflowStatus {
 }
 
 impl WorkflowStatus {
+    pub fn active() -> Self {
+        Self::Active(vec![])
+    }
+
     pub fn is_active(&self) -> bool {
         match *self {
             Self::Completed | Self::CompletedWithError(_) | Self::Cancelled | Self::Error(_) => {
@@ -116,12 +117,11 @@ impl WorkflowStatus {
 
     pub fn to_string_without_data(&self) -> String {
         let s = match *self {
-            Self::Created => "Created",
+            Self::Active(_) => "Active",
             Self::Completed => "Completed",
             Self::CompletedWithError(_) => "CompletedWithError",
             Self::Error(_) => "Error",
             Self::Cancelled => "Cancelled",
-            Self::RunNext(_) => "RunNext",
             Self::WaitForExternal(_) => "WaitForExternal",
         };
         String::from(s)
@@ -284,7 +284,7 @@ pub struct OperationInput {
     /// external operation. This is an alternative to exposing (workflow_id, operation_name, iteration)
     /// to the external world. Only used for external operations.
     pub external_key: Option<ExternalInputKey>,
-    input: serde_json::Value,
+    pub input: serde_json::Value,
     /// This value will only be present for external operation inputs after input has been provided from
     /// the external source.
     pub external_input: Option<serde_json::Value>,
@@ -414,7 +414,7 @@ pub enum RunResult<T> {
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
-            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::RunNext(vec![input])),
+            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::Active(vec![input])),
             $crate::RunResult::Result(r) => r
         }
     }};
@@ -484,7 +484,7 @@ macro_rules! run_all {
         )*
 
         if !returns.is_empty() {
-            return Ok(WorkflowStatus::RunNext(returns));
+            return Ok(WorkflowStatus::Active(returns));
         }
         results
     }};
@@ -674,7 +674,7 @@ pub mod tests {
                 );
                 match wf.run() {
                     Ok(WorkflowStatus::Completed) => break Ok(WorkflowStatus::Completed),
-                    Ok(WorkflowStatus::RunNext(next_operations)) => {
+                    Ok(WorkflowStatus::Active(next_operations)) => {
                         for op in next_operations {
                             results.push(self.operation_executor.execute(op)?);
                         }
@@ -753,7 +753,7 @@ pub mod tests {
             created_at: Utc::now(),
             context,
             correlation_id: "test".to_string(),
-            status: WorkflowStatus::Created,
+            status: WorkflowStatus::active(),
         })
     }
 }

@@ -74,12 +74,12 @@ impl Store for SqlStore {
         context: WorkflowContext,
     ) -> Result<WorkflowData> {
         use crate::db::schema::workflows;
-        let status = serde_json::to_value(WorkflowStatus::Created)?;
+        let status = serde_json::to_value(WorkflowStatus::active())?;
         let data = WorkflowDTO {
             id: workflow_id,
             name: workflow_name,
             correlation_id,
-            status: WorkflowStatus::Created.to_string_without_data(),
+            status: WorkflowStatus::active().to_string_without_data(),
             created_at: Utc::now(),
             context,
             status_data: Some(status),
@@ -496,7 +496,7 @@ pub mod tests {
         assert_eq!(wf.name, wf_name);
         assert_eq!(wf.context, context);
         assert_eq!(wf.correlation_id, correlation_id);
-        assert!(matches!(wf.status, WorkflowStatus::Created));
+        assert!(matches!(wf.status, WorkflowStatus::Active(_)));
         // Mark as completed
         store.complete_workflow(wf_id).unwrap();
         let wf = store.get_workflow(wf_id).unwrap().unwrap();

@@ -1,16 +1,17 @@
-use crate as evento_api;
-use crate::api::WorkflowFacade;
-use crate::db::sql_store::tests::create_store;
-use crate::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
-use crate::runners::tests::wait_for_workflow_to_complete;
-use crate::runners::AsyncWorkflowRunner;
-use crate::state::{InMemoryStore, State};
-use crate::{
+use anyhow::{format_err, Result};
+use chrono::Utc;
+use diesel::r2d2::{ConnectionManager, CustomizeConnection, Error, PoolError};
+use diesel::{Connection, PgConnection};
+use evento_api::api::WorkflowFacade;
+use evento_api::db::sql_store::{DbPool, PgPool, SqlStore};
+use evento_api::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
+use evento_api::runners::wait_for_workflow_to_complete;
+use evento_api::runners::AsyncWorkflowRunner;
+use evento_api::state::State;
+use evento_api::{
     run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError, WorkflowFactory,
     WorkflowStatus,
 };
-use anyhow::{format_err, Result};
-use chrono::Utc;
 use evento_derive::workflow;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,12 +19,34 @@ use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 
+#[derive(Debug)]
+struct TestTransaction;
+
+impl CustomizeConnection<PgConnection, Error> for TestTransaction {
+    fn on_acquire(&self, conn: &mut PgConnection) -> ::std::result::Result<(), Error> {
+        conn.begin_test_transaction().unwrap();
+        Ok(())
+    }
+}
+
+pub fn new_test_db_pool(database_url: &str) -> Result<DbPool, PoolError> {
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
+    PgPool::builder()
+        .min_idle(Some(1))
+        .max_size(1)
+        .connection_customizer(Box::new(TestTransaction))
+        .build(manager)
+        .map(Arc::new)
+}
+
 #[test]
 fn integration_tests() {
     env_logger::try_init().unwrap();
 
     let state = State {
-        store: Arc::new(create_store()),
+        store: Arc::new(SqlStore::new_with_pool(
+            new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap(),
+        )),
     };
     let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
     factories.insert(

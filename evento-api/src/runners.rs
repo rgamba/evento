@@ -1,6 +1,6 @@
 use crate::{
     state::{OperationExecutionData, State},
-    WorkflowData, WorkflowError, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
+    WorkflowData, WorkflowError, WorkflowId, WorkflowRegistry, WorkflowRunner, WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -178,7 +178,7 @@ impl AsyncWorkflowRunner {
                     .store
                     .complete_workflow_with_error(workflow_data.id, error.error.to_string())?;
             }
-            Ok(WorkflowStatus::RunNext(inputs)) => {
+            Ok(WorkflowStatus::Active(inputs)) => {
                 info!(
                     "Workflow has returned next operations. workflow_id={}, count={}",
                     workflow_data.id,
@@ -257,7 +257,7 @@ impl AsyncWorkflowRunner {
             id: Uuid::nil(),
             name: "".to_string(),
             correlation_id: "".to_string(),
-            status: WorkflowStatus::Created,
+            status: WorkflowStatus::active(),
             created_at: Utc::now(),
             context: serde_json::Value::Null,
         });
@@ -268,6 +268,26 @@ impl AsyncWorkflowRunner {
             thread::sleep(Duration::from_millis(10));
         }
         bail!("Runner thread did not stop")
+    }
+}
+
+pub fn wait_for_workflow_to_complete(
+    workflow_id: WorkflowId,
+    state: State,
+    timeout: Duration,
+) -> Result<WorkflowData> {
+    let time_timeout = Utc::now()
+        .checked_add_signed(chrono::Duration::from_std(timeout).unwrap())
+        .unwrap();
+    loop {
+        if Utc::now().ge(&time_timeout) {
+            break Err(format_err!("Workflow failed to reach completed status"));
+        }
+        let wf = state.store.get_workflow(workflow_id).unwrap().unwrap();
+        if let WorkflowStatus::Completed = wf.status {
+            break Ok(wf);
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -304,7 +324,7 @@ pub mod tests {
                 id: wf_id,
                 name: wf_name,
                 correlation_id: "test".to_string(),
-                status: WorkflowStatus::Created,
+                status: WorkflowStatus::active(),
                 created_at: Utc::now(),
                 context: serde_json::Value::String("test".to_string()),
             })
@@ -340,7 +360,7 @@ pub mod tests {
             id: wf_id,
             name: wf_name,
             correlation_id: "test".to_string(),
-            status: WorkflowStatus::Created,
+            status: WorkflowStatus::active(),
             created_at: Utc::now(),
             context: serde_json::Value::String("test".to_string()),
         });
@@ -358,25 +378,5 @@ pub mod tests {
             mock_wf
         });
         Arc::new(mock)
-    }
-
-    pub fn wait_for_workflow_to_complete(
-        workflow_id: WorkflowId,
-        state: State,
-        timeout: Duration,
-    ) -> Result<WorkflowData> {
-        let time_timeout = Utc::now()
-            .checked_add_signed(chrono::Duration::from_std(timeout).unwrap())
-            .unwrap();
-        loop {
-            if Utc::now().ge(&time_timeout) {
-                break Err(format_err!("Workflow failed to reach completed status"));
-            }
-            let wf = state.store.get_workflow(workflow_id).unwrap().unwrap();
-            if let WorkflowStatus::Completed = wf.status {
-                break Ok(wf);
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
     }
 }

@@ -39,7 +39,7 @@ impl TryInto<WorkflowData> for WorkflowDTO {
 
     fn try_into(self) -> Result<WorkflowData, Self::Error> {
         let status = match self.status.as_str() {
-            "Created" => WorkflowStatus::Created,
+            "Active" => WorkflowStatus::active(),
             "Completed" => WorkflowStatus::Completed,
             "CompletedWithError" | "WaitForExternal" | "RunNext" | "Error" => {
                 serde_json::from_value::<WorkflowStatus>(
