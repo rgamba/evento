@@ -193,42 +193,28 @@ impl AsyncWorkflowRunner {
                     inputs
                         .iter()
                         .map(|input| {
+                            let mut ext_input = input.input.clone();
+                            if let Some(wait_params) = &input.wait_params {
+                                ext_input.external_key = Some(wait_params.external_input_key);
+                            }
                             (
+                                // Execution data:
                                 OperationExecutionData {
                                     workflow_id: workflow_data.id,
                                     correlation_id: workflow_data.correlation_id.clone(),
                                     retry_count: None,
-                                    input: input.clone(),
+                                    input: ext_input,
                                 },
-                                Utc::now(),
+                                // Next run date:
+                                input
+                                    .wait_params
+                                    .clone()
+                                    .map(|wp| wp.timeout.unwrap_or_else(|| *INFINITE_WAIT))
+                                    .unwrap_or_else(|| Utc::now()),
                             )
                         })
                         .collect(),
                 )?;
-            }
-            Ok(WorkflowStatus::WaitForExternal((input, timeout, external_key))) => {
-                let mut ext_input = input.clone();
-                ext_input.external_key = Some(*external_key);
-                info!(
-                    "Workflow has returned a wait. id={}, timeout={:?}",
-                    workflow_data.id, timeout
-                );
-                log::debug!("Workflow input: {:?}", ext_input);
-
-                state
-                    .store
-                    .queue_operation(
-                        OperationExecutionData {
-                            workflow_id: workflow_data.id,
-                            correlation_id: workflow_data.correlation_id,
-                            retry_count: None,
-                            input: ext_input,
-                        },
-                        timeout.map_or(*INFINITE_WAIT, |t| t),
-                    )
-                    .map_err(|err| {
-                        format_err!("Error while trying to queue operation. error={:?}", err)
-                    })?;
             }
             Ok(_) => {
                 // All others are a no-op

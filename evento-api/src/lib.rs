@@ -72,22 +72,36 @@ pub struct WorkflowData {
 pub enum WorkflowStatus {
     /// Workflow is active.
     /// The vector of [OperationInput] represent the operations that should be run next.
-    Active(Vec<OperationInput>),
+    Active(Vec<NextInput>),
     /// Workflow completed successfully happy path.
     Completed,
     /// Workflow completed but exercised an error scenario.
     /// This kind of error is domain related and not an infrastructure error.
     CompletedWithError(WorkflowError),
-    /// The task needs to wait for external input in order to proceed.
-    /// In case the `Option` datetime is provided, the external input must arrive
-    /// before that time, otherwise the task will time out.
-    WaitForExternal((OperationInput, Option<DateTime<Utc>>, ExternalInputKey)),
     /// Unexpected error happened.
     /// This typically means an infrastructure error raised by an operation not being
     /// able to complete successfully or the number of retries have reached max.
     Error(WorkflowError),
     /// The workflow was manually cancelled.
     Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct NextInput {
+    pub input: OperationInput,
+    pub wait_params: Option<WaitParams>,
+}
+
+impl NextInput {
+    pub fn new(input: OperationInput, wait_params: Option<WaitParams>) -> Self {
+        Self { input, wait_params }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct WaitParams {
+    pub timeout: Option<DateTime<Utc>>,
+    pub external_input_key: ExternalInputKey,
 }
 
 impl WorkflowStatus {
@@ -122,7 +136,6 @@ impl WorkflowStatus {
             Self::CompletedWithError(_) => "CompletedWithError",
             Self::Error(_) => "Error",
             Self::Cancelled => "Cancelled",
-            Self::WaitForExternal(_) => "WaitForExternal",
         };
         String::from(s)
     }
@@ -414,7 +427,7 @@ pub enum RunResult<T> {
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
-            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::Active(vec![input])),
+            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::Active(vec![evento_api::NextInput::new(input, None)])),
             $crate::RunResult::Result(r) => r
         }
     }};
@@ -475,7 +488,7 @@ macro_rules! run_all {
         $(
             match _run_internal!($self, $op<$result_type>($arg)) {
                 evento_api::RunResult::Return(input) => {
-                    returns.push(input);
+                    returns.push(evento_api::NextInput::new(input, None));
                 },
                 evento_api::RunResult::Result(r) => {
                     results.push(r);
@@ -516,8 +529,15 @@ macro_rules! run_all {
 #[macro_export]
 macro_rules! wait_for_external {
     ( $self:ident, $op:ident <$result_type:ty> ($arg:expr), $timeout:expr, $external_key:expr ) =>  {{
+
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
-            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::WaitForExternal((input, Some($timeout), $external_key))),
+            $crate::RunResult::Return(input) =>  {
+                let wait_input = evento_api::NextInput::new(input, Some(evento_api::WaitParams {
+                    external_input_key: $external_key,
+                    timeout: Some($timeout),
+                }));
+                return Ok(WorkflowStatus::Active(vec![wait_input]));
+            },
             $crate::RunResult::Result(r) => r
         }
     }};
@@ -586,174 +606,5 @@ impl WorkflowInnerState {
             .clone()
             .into_iter()
             .find(|r| r.operation_name == operation_name && r.iteration == iteration)
-    }
-}
-
-pub mod tests {
-    use super::*;
-    use crate::Operation;
-    use std::collections::HashMap;
-
-    pub struct MockOperation {
-        operation_name: String,
-        callback:
-            Box<dyn Fn(OperationInput) -> Result<serde_json::Value, WorkflowError> + Send + Sync>,
-    }
-
-    impl MockOperation {
-        pub fn new(
-            name: &str,
-            callback: impl Fn(OperationInput) -> Result<serde_json::Value, WorkflowError>
-                + 'static
-                + Send
-                + Sync,
-        ) -> Self {
-            Self {
-                operation_name: name.into(),
-                callback: Box::new(callback),
-            }
-        }
-    }
-
-    impl Operation for MockOperation {
-        fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-            (self.callback)(input)
-        }
-
-        fn name(&self) -> &str {
-            self.operation_name.as_str()
-        }
-
-        fn validate_input(_input: &OperationInput) -> Result<()>
-        where
-            Self: Sized,
-        {
-            unimplemented!()
-        }
-    }
-
-    /// Workflow runner that allows immediate execution of the workflow and the associated operations
-    /// synchronously in the same task.
-    pub struct InlineWorkflowRunner {
-        operation_executor: Arc<dyn OperationExecutor>,
-        workflow_factory_map: HashMap<String, Box<dyn WorkflowFactory>>,
-    }
-
-    impl WorkflowRunner for InlineWorkflowRunner {
-        fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError> {
-            match self.run_and_return_results(workflow_data) {
-                Ok((result, _)) => Ok(result),
-                Err(e) => Err(e),
-            }
-        }
-    }
-
-    impl InlineWorkflowRunner {
-        pub fn new(
-            operation_executor: Arc<dyn OperationExecutor>,
-            workflow_factory_map: HashMap<String, Box<dyn WorkflowFactory>>,
-        ) -> Self {
-            Self {
-                operation_executor,
-                workflow_factory_map,
-            }
-        }
-
-        pub fn run_and_return_results(
-            &self,
-            workflow_data: WorkflowData,
-        ) -> Result<(WorkflowStatus, Vec<OperationResult>), WorkflowError> {
-            let mut results = Vec::new();
-            let factory = self.workflow_factory_map.get(&workflow_data.name).unwrap();
-            let res = loop {
-                let wf = factory.create(
-                    workflow_data.id,
-                    workflow_data.correlation_id.clone(),
-                    workflow_data.context.clone(),
-                    results.clone(),
-                );
-                match wf.run() {
-                    Ok(WorkflowStatus::Completed) => break Ok(WorkflowStatus::Completed),
-                    Ok(WorkflowStatus::Active(next_operations)) => {
-                        for op in next_operations {
-                            results.push(self.operation_executor.execute(op)?);
-                        }
-                    }
-                    Ok(WorkflowStatus::WaitForExternal((input, _, _))) => {
-                        //TODO: figure out how to pass the external input.
-                        results.push(self.operation_executor.execute(input)?);
-                    }
-                    Ok(other) => break Ok(other),
-                    Err(e) => break Err(e),
-                }
-            };
-            match res {
-                Ok(s) => Ok((s, results)),
-                Err(e) => Err(e),
-            }
-        }
-    }
-
-    /// Operator executor that executes the operations immediately on the same thread and with
-    /// an immediate retry strategy.
-    pub struct InlineOperationExecutor {
-        pub operation_map: HashMap<String, Box<dyn Operation>>,
-        pub max_retries: usize,
-    }
-
-    impl OperationExecutor for InlineOperationExecutor {
-        fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
-            let operation = self
-                .operation_map
-                .get(input.operation_name.as_str())
-                .unwrap();
-            let mut retries: usize = 0;
-            let result = loop {
-                match operation.execute(input.clone()) {
-                    Ok(result) => break Ok(result),
-                    Err(e) => {
-                        if e.is_retriable && retries < self.max_retries {
-                            retries += 1;
-                            continue;
-                        } else {
-                            break Err(e);
-                        }
-                    }
-                }
-            };
-            match result {
-                Ok(res) => Ok(OperationResult::new(
-                    serde_json::to_value(res).unwrap(),
-                    input.iteration,
-                    operation.name().into(),
-                    input.clone(),
-                )
-                .unwrap()),
-                Err(err) => Err(err),
-            }
-        }
-    }
-
-    /// Utility function to easily run workflows.
-    pub fn run_to_completion(
-        factory: Box<dyn WorkflowFactory>,
-        context: ::serde_json::Value,
-        operation_map: HashMap<String, Box<dyn Operation>>,
-    ) -> Result<(WorkflowStatus, Vec<OperationResult>), WorkflowError> {
-        let executor = InlineOperationExecutor {
-            operation_map,
-            max_retries: 10,
-        };
-        let mut factories = HashMap::new();
-        factories.insert("test".to_string(), factory);
-        let runner = InlineWorkflowRunner::new(Arc::new(executor), factories);
-        runner.run_and_return_results(WorkflowData {
-            id: Uuid::new_v4(),
-            name: "test".to_string(),
-            created_at: Utc::now(),
-            context,
-            correlation_id: "test".to_string(),
-            status: WorkflowStatus::active(),
-        })
     }
 }
