@@ -2,6 +2,7 @@ use anyhow::{format_err, Result};
 use chrono::Utc;
 use diesel::r2d2::{ConnectionManager, CustomizeConnection, Error, PoolError};
 use diesel::{Connection, PgConnection};
+use dotenv::dotenv;
 use evento::api::WorkflowFacade;
 use evento::db::sql_store::{DbPool, PgPool, SqlStore};
 use evento::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
@@ -9,15 +10,77 @@ use evento::runners::wait_for_workflow_to_complete;
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::State;
 use evento::{
-    run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError, WorkflowFactory,
-    WorkflowStatus,
+    run, run_all, wait, Operation, OperationInput, WaitParams, Workflow, WorkflowError,
+    WorkflowFactory, WorkflowStatus,
 };
 use evento_derive::workflow;
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
+
+// -------------------------------------------------------------------------------------------------
+// Workflow definitions
+// -------------------------------------------------------------------------------------------------
+
+#[workflow]
+struct SimpleWorkflow {
+    #[allow(dead_code)]
+    context: String,
+}
+
+impl Workflow for SimpleWorkflow {
+    fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
+        run_all!(self, A(true), A<bool>(false));
+        run!(self, A(true));
+        run!(self, A<bool>(true));
+        Ok(WorkflowStatus::Completed)
+    }
+}
+
+#[workflow]
+struct WaitWorkflow {
+    #[allow(dead_code)]
+    context: String,
+}
+
+impl Workflow for WaitWorkflow {
+    fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
+        run!(self, A(true));
+        let timeout = Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(20))
+            .unwrap();
+        wait!(self, A(true), WaitParams::new(Uuid::nil(), timeout));
+        run!(self, A<bool>(true));
+        Ok(WorkflowStatus::Completed)
+    }
+}
+
+struct A;
+impl Operation for A {
+    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+        Ok(serde_json::Value::Bool(true))
+    }
+
+    fn name(&self) -> &str {
+        "A"
+    }
+
+    fn validate_input(input: &OperationInput) -> Result<()>
+    where
+        Self: Sized,
+    {
+        serde_json::from_value::<bool>(input.input.clone())
+            .map(|_| ())
+            .map_err(|e| format_err!("{:?}", e))
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Tests
+// -------------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct TestTransaction;
@@ -41,11 +104,12 @@ pub fn new_test_db_pool(database_url: &str) -> Result<DbPool, PoolError> {
 
 #[test]
 fn integration_tests() {
+    dotenv().ok();
     env_logger::try_init().unwrap();
-
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set!");
     let state = State {
         store: Arc::new(SqlStore::new_with_pool(
-            new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap(),
+            new_test_db_pool(database_url.as_str()).unwrap(),
         )),
     };
     let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
@@ -81,57 +145,4 @@ fn integration_tests() {
     wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(5)).unwrap();
     runner.stop().unwrap();
     facade.stop().unwrap();
-}
-
-#[workflow]
-struct SimpleWorkflow {
-    #[allow(dead_code)]
-    context: String,
-}
-
-impl Workflow for SimpleWorkflow {
-    fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run!(self, A<bool>(true));
-        run!(self, A<bool>(true));
-        run!(self, A<bool>(true));
-        Ok(WorkflowStatus::Completed)
-    }
-}
-
-#[workflow]
-struct WaitWorkflow {
-    #[allow(dead_code)]
-    context: String,
-}
-
-impl Workflow for WaitWorkflow {
-    fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run!(self, A<bool>(true));
-        let timeout = Utc::now()
-            .checked_add_signed(chrono::Duration::seconds(20))
-            .unwrap();
-        wait_for_external!(self, A<bool>(true), timeout, Uuid::nil());
-        run!(self, A<bool>(true));
-        Ok(WorkflowStatus::Completed)
-    }
-}
-
-struct A;
-impl Operation for A {
-    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        Ok(serde_json::Value::Bool(true))
-    }
-
-    fn name(&self) -> &str {
-        "A"
-    }
-
-    fn validate_input(input: &OperationInput) -> Result<()>
-    where
-        Self: Sized,
-    {
-        serde_json::from_value::<bool>(input.input.clone())
-            .map(|_| ())
-            .map_err(|e| format_err!("{:?}", e))
-    }
 }

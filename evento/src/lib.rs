@@ -100,8 +100,28 @@ impl NextInput {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WaitParams {
+    /// The time until the wait is going to block before timing out the operation.
+    /// External input must come in before this date.
     pub timeout: Option<DateTime<Utc>>,
+    /// The unique key used to identify this wait operation externally. The caller will use this
+    /// in order to signal external input.
     pub external_input_key: ExternalInputKey,
+}
+
+impl WaitParams {
+    pub fn new(external_input_key: ExternalInputKey, timeout: DateTime<Utc>) -> Self {
+        Self {
+            external_input_key,
+            timeout: Some(timeout),
+        }
+    }
+
+    pub fn without_timeout(external_input_key: ExternalInputKey) -> Self {
+        Self {
+            external_input_key,
+            timeout: None,
+        }
+    }
 }
 
 impl WorkflowStatus {
@@ -421,12 +441,15 @@ pub enum RunResult<T> {
 /// # Examples
 ///
 /// ```ignore
+/// // With return type
 /// let result: String = run!(self, GreetOperation<String>(my_name));
+/// // When no return is needed:
+/// run!(self, GreetOperation(my_name));
 /// ```
 #[macro_export]
 macro_rules! run {
-    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) =>  {{
-        match $crate::_run_internal!($self, $op<$result_type>($arg)) {
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr) ) =>  {{
+        match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
             $crate::RunResult::Return(input) =>  return Ok($crate::WorkflowStatus::Active(vec![$crate::NextInput::new(input, None)])),
             $crate::RunResult::Result(r) => r
         }
@@ -435,7 +458,7 @@ macro_rules! run {
 
 #[macro_export]
 macro_rules! _run_internal {
-    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) => {{
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr) ) => {{
         let operation_name = stringify!($op).to_string();
         let iteration = $self.__state.iteration_counter(&operation_name);
         let workflow_name = $self.name();
@@ -444,13 +467,19 @@ macro_rules! _run_internal {
             .__state
             .find_execution_result(operation_name.clone(), iteration)
         {
-            // We already have a result for this execution. Return it
             $self.__state.increase_iteration_counter(&operation_name);
-            $crate::RunResult::Result(
-                result
-                    .result::<$result_type>()
-                    .map_err(|e| WorkflowError::internal_error(format!("{:?}", e)))?,
-            )
+            $crate::RunResult::Result(false) // See comment below.
+            $(
+                ; // Kind of a hack: if there is no return type, the previous line will return, otherwise
+                // this semi-colon will ignore the line above and continue with the line below as the last stmt.
+
+                // We already have a result for this execution.
+                $crate::RunResult::Result(
+                    result
+                        .result::<$result_type>()
+                        .map_err(|e| WorkflowError::internal_error(format!("{:?}", e)))?,
+                )
+            )?
         } else {
             // Operation has no been executed.
             let input =
@@ -482,12 +511,12 @@ macro_rules! _run_internal {
 /// ```
 #[macro_export]
 macro_rules! run_all {
-    ( $self:ident, $( $op:ident <$result_type:ty> ($arg:expr) ),+ $(,)* ) =>  {{
+    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) ),+ $(,)* ) =>  {{
         let mut results = Vec::new();
         let mut returns = Vec::new();
 
         $(
-            match _run_internal!($self, $op<$result_type>($arg)) {
+            match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
                 $crate::RunResult::Return(input) => {
                     returns.push($crate::NextInput::new(input, None));
                 },
@@ -528,15 +557,12 @@ macro_rules! run_all {
 /// let approval_signature = wait_for_external!(self, Approval<String>(true), Utc::now(), external_key);
 /// ```
 #[macro_export]
-macro_rules! wait_for_external {
-    ( $self:ident, $op:ident <$result_type:ty> ($arg:expr), $timeout:expr, $external_key:expr ) =>  {{
+macro_rules! wait {
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr), $wait_params:expr ) =>  {{
 
-        match $crate::_run_internal!($self, $op<$result_type>($arg)) {
+        match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
             $crate::RunResult::Return(input) =>  {
-                let wait_input = $crate::NextInput::new(input, Some($crate::WaitParams {
-                    external_input_key: $external_key,
-                    timeout: Some($timeout),
-                }));
+                let wait_input = $crate::NextInput::new(input, Some($wait_params));
                 return Ok($crate::WorkflowStatus::Active(vec![wait_input]));
             },
             $crate::RunResult::Result(r) => r
