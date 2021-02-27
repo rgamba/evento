@@ -25,14 +25,14 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let workflow_def = quote! {
         struct #struct_name {
             #( #fields, )*
-            pub __state: evento_api::WorkflowInnerState,
+            pub __state: evento::WorkflowInnerState,
         }
         impl #struct_name {
-            pub fn new(id: evento_api::WorkflowId, correlation_id: evento_api::CorrelationId, operation_results: Vec<evento_api::OperationResult>, #( #fields2 ),*) -> Self
+            pub fn new(id: evento::WorkflowId, correlation_id: evento::CorrelationId, operation_results: Vec<evento::OperationResult>, #( #fields2 ),*) -> Self
             where #context_type: ::serde::Serialize + Clone
             {
                 Self {
-                    __state: evento_api::WorkflowInnerState::new(id, correlation_id, operation_results),
+                    __state: evento::WorkflowInnerState::new(id, correlation_id, operation_results),
                     #( #fields_names, )*
                 }
             }
@@ -44,7 +44,7 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
             fn context(&self) -> #context_type {
                 self.context.clone()
             }
-            pub fn id(&self) -> evento_api::WorkflowId {
+            pub fn id(&self) -> evento::WorkflowId {
                 self.__state.id
             }
             pub fn name(&self) -> String {
@@ -57,8 +57,8 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let factory_ident = syn::Ident::new(factory_name.as_str(), item.span());
     let factory_def = quote! {
         pub struct #factory_ident;
-        impl evento_api::WorkflowFactory for #factory_ident {
-            fn create(&self, id: evento_api::WorkflowId, correlation_id: evento_api::CorrelationId, context: evento_api::WorkflowContext, execution_results: Vec<evento_api::OperationResult>) -> Box<dyn evento_api::Workflow> {
+        impl evento::WorkflowFactory for #factory_ident {
+            fn create(&self, id: evento::WorkflowId, correlation_id: evento::CorrelationId, context: evento::WorkflowContext, execution_results: Vec<evento::OperationResult>) -> Box<dyn evento::Workflow> {
                 Box::new(#struct_name::new(
                     id,
                     correlation_id,

@@ -1,5 +1,5 @@
 [package]
-name = "evento-api"
+name = "evento"
 version = "0.1.0"
 authors = ["Ricardo Gamba Lavin <gamba@fb.com>"]
 edition = "2018"

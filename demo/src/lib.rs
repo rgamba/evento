@@ -1,7 +1,7 @@
 use actix_web::rt::blocking::run;
 use anyhow::{format_err, Result};
 use chrono::Utc;
-use evento_api::{
+use evento::{
     parse_input, run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError,
     WorkflowStatus,
 };

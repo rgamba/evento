@@ -3,12 +3,12 @@ use actix_web::{get, middleware, web, App, HttpServer, Responder};
 use anyhow::format_err;
 use chrono::Utc;
 use demo::{FetchUsers, StoreResult, TestContext, TestWorkflowFactory, WaitAndFilterUsers};
-use evento_api::admin::Admin;
-use evento_api::api::WorkflowFacade;
-use evento_api::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
-use evento_api::runners::AsyncWorkflowRunner;
-use evento_api::state::{InMemoryStore, State};
-use evento_api::{
+use evento::admin::Admin;
+use evento::api::WorkflowFacade;
+use evento::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
+use evento::runners::AsyncWorkflowRunner;
+use evento::state::{InMemoryStore, State};
+use evento::{
     ExternalInputKey, Operation, WorkflowData, WorkflowError, WorkflowFactory, WorkflowStatus,
 };
 use serde_json::Number;
