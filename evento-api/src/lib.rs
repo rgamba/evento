@@ -71,7 +71,7 @@ pub struct WorkflowData {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum WorkflowStatus {
     /// Workflow is active.
-    /// The vector of [OperationInput] represent the operations that should be run next.
+    /// The vector of [NextInput] represent the operations that should be run next.
     Active(Vec<NextInput>),
     /// Workflow completed successfully happy path.
     Completed,
@@ -427,7 +427,7 @@ pub enum RunResult<T> {
 macro_rules! run {
     ( $self:ident, $op:ident <$result_type:ty> ($arg:expr) ) =>  {{
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
-            $crate::RunResult::Return(input) =>  return Ok(WorkflowStatus::Active(vec![evento_api::NextInput::new(input, None)])),
+            $crate::RunResult::Return(input) =>  return Ok($crate::WorkflowStatus::Active(vec![$crate::NextInput::new(input, None)])),
             $crate::RunResult::Result(r) => r
         }
     }};
@@ -446,15 +446,16 @@ macro_rules! _run_internal {
         {
             // We already have a result for this execution. Return it
             $self.__state.increase_iteration_counter(&operation_name);
-            evento_api::RunResult::Result(
+            $crate::RunResult::Result(
                 result
                     .result::<$result_type>()
                     .map_err(|e| WorkflowError::internal_error(format!("{:?}", e)))?,
             )
         } else {
             // Operation has no been executed.
-            let input = OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
-                .unwrap();
+            let input =
+                $crate::OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
+                    .unwrap();
             $self.__state.increase_iteration_counter(&operation_name);
             if let Err(e) = $op::validate_input(&input) {
                 panic!(format!(
@@ -462,7 +463,7 @@ macro_rules! _run_internal {
                     operation_name, e
                 ));
             }
-            evento_api::RunResult::Return(input)
+            $crate::RunResult::Return(input)
         }
     }};
 }
@@ -487,17 +488,17 @@ macro_rules! run_all {
 
         $(
             match _run_internal!($self, $op<$result_type>($arg)) {
-                evento_api::RunResult::Return(input) => {
-                    returns.push(evento_api::NextInput::new(input, None));
+                $crate::RunResult::Return(input) => {
+                    returns.push($crate::NextInput::new(input, None));
                 },
-                evento_api::RunResult::Result(r) => {
+                $crate::RunResult::Result(r) => {
                     results.push(r);
                 }
             }
         )*
 
         if !returns.is_empty() {
-            return Ok(WorkflowStatus::Active(returns));
+            return Ok($crate::WorkflowStatus::Active(returns));
         }
         results
     }};
@@ -532,11 +533,11 @@ macro_rules! wait_for_external {
 
         match $crate::_run_internal!($self, $op<$result_type>($arg)) {
             $crate::RunResult::Return(input) =>  {
-                let wait_input = evento_api::NextInput::new(input, Some(evento_api::WaitParams {
+                let wait_input = $crate::NextInput::new(input, Some($crate::WaitParams {
                     external_input_key: $external_key,
                     timeout: Some($timeout),
                 }));
-                return Ok(WorkflowStatus::Active(vec![wait_input]));
+                return Ok($crate::WorkflowStatus::Active(vec![wait_input]));
             },
             $crate::RunResult::Result(r) => r
         }
