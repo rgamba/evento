@@ -294,7 +294,7 @@ impl Store for SqlStore {
         Ok(())
     }
 
-    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()> {
+    fn mark_active(&self, _workflow_id: WorkflowId) -> Result<()> {
         unimplemented!()
     }
 
@@ -390,9 +390,9 @@ impl Store for SqlStore {
 
     fn delete_operation_results(
         &self,
-        workflow_id: WorkflowId,
-        operation_name: OperationName,
-        iteration: usize,
+        _workflow_id: WorkflowId,
+        _operation_name: OperationName,
+        _iteration: usize,
     ) -> Result<()> {
         unimplemented!()
     }

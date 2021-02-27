@@ -6,7 +6,6 @@ use actix_web::{middleware, web, App, HttpServer};
 use anyhow::format_err;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::task;
 use uuid::Uuid;
@@ -42,6 +41,7 @@ struct ReplayRequest {
     pub iteration: u64,
 }
 
+#[allow(dead_code)]
 pub struct Admin {
     facade: web::Data<WorkflowFacade>,
 }
@@ -80,11 +80,11 @@ impl Admin {
                 .unwrap()
                 .run();
                 let join = task::spawn(async move {
-                    server.await;
+                    server.await.ok();
                 });
                 if let Err(e) = join.await {
                     log::error!("Admin thread panic unexpectedly. error={:?}", e);
-                    tokio::time::delay_for(Duration::from_secs(1));
+                    tokio::time::delay_for(Duration::from_secs(1)).await;
                 }
             }
         });

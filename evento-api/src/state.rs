@@ -414,7 +414,8 @@ impl Store for InMemoryStore {
                 execution_data.workflow_id,
                 execution_data.input.operation_name.clone(),
                 execution_data.input.iteration,
-            );
+            )
+            .ok();
         }
         let mut guard = self.queue.lock().unwrap();
         guard.push((execution_data, run_date, Self::QUEUED));
@@ -451,7 +452,7 @@ impl Store for InMemoryStore {
         Ok(data)
     }
 
-    fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
+    fn get_workflows(&self, _filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
         let guard = self.workflows.lock().unwrap();
         Ok(guard.iter().cloned().collect())
     }
@@ -466,9 +467,8 @@ impl Store for InMemoryStore {
             let mut guard = self.operation_results.lock().unwrap();
             let results = guard.get(&workflow_id).unwrap();
             let mut new_results = vec![];
-            let mut remove = false;
             let mut element = None;
-            for (i, (operation_name_, result)) in results.iter().enumerate() {
+            for (operation_name_, result) in results {
                 if operation_name_ == &operation_name {
                     if let Ok(r) = result {
                         if r.iteration == iteration {
