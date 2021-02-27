@@ -509,16 +509,30 @@ macro_rules! _run_internal {
 /// ```ignore
 /// let results: Vec<String> = run_all!(self, GreetOperation<String>(my_name), GreetOperation<String>(other_name));
 /// ```
+///
+/// Wait and regular operations can be ran together:
+///
+/// ```ignore
+/// run_all!(self,
+///     GreetOperation(my_name),
+///     WaitOperation(input) with wait WaitParams::new()
+/// )
+/// ```
 #[macro_export]
 macro_rules! run_all {
-    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) ),+ $(,)* ) =>  {{
+    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) $(with wait $wait:expr)? ),+ $(,)* ) =>  {
+        // The code `{None::<$crate::WaitParams> $(; Some($wait) )?}` is kind of a hack in order to
+        // pass in a None value in case there is not `with wait` argument or the actual wait as optional if provided.
+        run_all!($self, $( $op $(<$result_type>)? ($arg) @wait {None::<$crate::WaitParams> $(; Some($wait) )?} ),+)
+    };
+    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) @wait $wait_opt:expr ),+ $(,)* ) =>  {{
         let mut results = Vec::new();
         let mut returns = Vec::new();
 
         $(
             match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
                 $crate::RunResult::Return(input) => {
-                    returns.push($crate::NextInput::new(input, None));
+                    returns.push($crate::NextInput::new(input, $wait_opt));
                 },
                 $crate::RunResult::Result(r) => {
                     results.push(r);

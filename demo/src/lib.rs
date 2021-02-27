@@ -2,8 +2,8 @@ use actix_web::rt::blocking::run;
 use anyhow::{format_err, Result};
 use chrono::Utc;
 use evento::{
-    parse_input, run, wait_for_external, Operation, OperationInput, Workflow, WorkflowError,
-    WorkflowStatus,
+    parse_input, run, wait, Operation, OperationInput, Workflow, WorkflowError,
+    WorkflowStatus, WaitParams,
 };
 use evento_derive::workflow;
 use log;
@@ -32,7 +32,7 @@ impl Workflow for TestWorkflow {
         let external_key = Uuid::new_v4();
         log::info!("External key for wait: {}", external_key);
         let filtered =
-            wait_for_external!(self, WaitAndFilterUsers<Vec<User>>(users), timeout, external_key);
+            wait!(self, WaitAndFilterUsers<Vec<User>>(users), WaitParams::new(external_key, timeout));
         run!(self, StoreResult<bool>(filtered));
         Ok((WorkflowStatus::Completed))
     }
@@ -105,7 +105,7 @@ impl Operation for WaitAndFilterUsers {
         let age: u64 = serde_json::from_value(input.external_input.unwrap()).unwrap();
         let result = users
             .into_iter()
-            .filter(|u| u.employee_age.parse::<u64>().unwrap() >= age)
+            .filter(|u| u.employee_age >= age)
             .collect::<Vec<User>>();
         Ok(serde_json::to_value(result).unwrap())
     }
@@ -147,9 +147,9 @@ impl Operation for StoreResult {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct User {
-    id: String,
+    id: u64,
     employee_name: String,
-    employee_salary: String,
-    employee_age: String,
+    employee_salary: u64,
+    employee_age: u64,
     profile_image: String,
 }
