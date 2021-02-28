@@ -362,20 +362,10 @@ impl Store for SqlStore {
         &self,
         operations: Vec<(OperationExecutionData, DateTime<Utc>)>,
     ) -> Result<()> {
-        use crate::db::schema::operations_queue::dsl::*;
-        let dtos = operations
-            .into_iter()
-            .map(|(data, run_date)| {
-                let mut dto: OperationQueueDTO = data.try_into()?;
-                dto.state = QueueState::Queued.to_string();
-                dto.next_run_date = run_date;
-                Ok(dto)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        diesel::insert_into(operations_queue)
-            .values(&dtos)
-            .execute(&self.db_pool.get()?)
-            .map_err(|err| format_err!("Unable to queue operations: {}", err))?;
+        // TODO: consider having all updates in a single transaction.
+        for (data, run_date) in operations {
+            self.queue_operation(data, run_date)?;
+        }
         Ok(())
     }
 

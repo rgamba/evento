@@ -10,13 +10,16 @@ use evento::runners::wait_for_workflow_to_complete;
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::State;
 use evento::{
-    run, run_all, wait, Operation, OperationInput, WaitParams, Workflow, WorkflowError,
-    WorkflowFactory, WorkflowStatus,
+    operation_ok, parse_input, run, run_all, wait, Operation, OperationInput, WaitParams, Workflow,
+    WorkflowError, WorkflowFactory, WorkflowStatus,
 };
 use evento_derive::workflow;
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
@@ -24,6 +27,17 @@ use uuid::Uuid;
 // -------------------------------------------------------------------------------------------------
 // Workflow definitions
 // -------------------------------------------------------------------------------------------------
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct User {
+    name: String,
+    age: u32,
+}
+
+lazy_static! {
+    static ref USERS: Arc<Mutex<Vec<User>>> = Arc::new(Mutex::new(Vec::new()));
+    static ref SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
+}
 
 #[workflow]
 struct SimpleWorkflow {
@@ -33,9 +47,9 @@ struct SimpleWorkflow {
 
 impl Workflow for SimpleWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run_all!(self, A(true), A<bool>(false));
-        run!(self, A(true));
-        run!(self, A<bool>(true));
+        run_all!(self, A(1), A<i64>(2));
+        run!(self, A(3));
+        run!(self, A<i64>(4));
         Ok(WorkflowStatus::Completed)
     }
 }
@@ -48,20 +62,80 @@ struct WaitWorkflow {
 
 impl Workflow for WaitWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run!(self, A(true));
+        let users = run!(self, GetUsers<Vec<User>>(GetUsersFilter{name: None, min_age: Some(25)}));
+        assert_eq!(users.len(), 2);
+        let result = run!(self, A<i64>(10));
+        assert_eq!(result, 10);
+        // When no return type is specified, it should return a Value
+        let result = run!(self, A(15));
+        assert_eq!(result, serde_json::Value::Number(15.into()));
+        // Test a wait operation
         let timeout = Utc::now()
             .checked_add_signed(chrono::Duration::seconds(20))
             .unwrap();
-        wait!(self, A(true), WaitParams::new(Uuid::nil(), timeout));
-        run!(self, A<bool>(true));
+        let result = wait!(self, A<i64>(20), WaitParams::new(Uuid::nil(), timeout));
+        assert_eq!(result, 20);
+        let r = run_all!(self, A(30), A(40), A(50));
+        // Make sure results come in in the same order and as Value
+        assert_eq!(r.get(0).unwrap(), &serde_json::Value::Number(30.into()));
+        assert_eq!(r.get(1).unwrap(), &serde_json::Value::Number(40.into()));
+        assert_eq!(r.get(2).unwrap(), &serde_json::Value::Number(50.into()));
         Ok(WorkflowStatus::Completed)
     }
 }
 
+struct GetUsers;
+impl Operation for GetUsers {
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+        let filter = parse_input!(input, GetUsersFilter);
+        let guard = USERS.lock().unwrap();
+        let copy = guard
+            .iter()
+            .filter(|u| {
+                if let Some(age) = filter.min_age {
+                    u.age >= age
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<Vec<User>>();
+        operation_ok!(copy)
+    }
+
+    fn name(&self) -> &str {
+        "GetUsers"
+    }
+
+    fn validate_input(input: &OperationInput) -> Result<()>
+    where
+        Self: Sized,
+    {
+        serde_json::from_value::<GetUsersFilter>(input.input.clone())
+            .map(|_| ())
+            .map_err(|e| format_err!("{:?}", e))
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct GetUsersFilter {
+    pub name: Option<String>,
+    pub min_age: Option<u32>,
+}
+
 struct A;
 impl Operation for A {
-    fn execute(&self, _input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
-        Ok(serde_json::Value::Bool(true))
+    fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
+        if SHOULD_FAIL.load(Ordering::SeqCst) {
+            SHOULD_FAIL.store(false, Ordering::SeqCst);
+            return Err(WorkflowError::internal_error(
+                "Unable to do operation now".to_string(),
+            ));
+        } else {
+            SHOULD_FAIL.store(true, Ordering::SeqCst);
+        }
+        let inp = parse_input!(input, i64);
+        operation_ok!(inp)
     }
 
     fn name(&self) -> &str {
@@ -72,7 +146,7 @@ impl Operation for A {
     where
         Self: Sized,
     {
-        serde_json::from_value::<bool>(input.input.clone())
+        serde_json::from_value::<i64>(input.input.clone())
             .map(|_| ())
             .map_err(|e| format_err!("{:?}", e))
     }
@@ -104,6 +178,22 @@ pub fn new_test_db_pool(database_url: &str) -> Result<DbPool, PoolError> {
 
 #[test]
 fn integration_tests() {
+    {
+        let mut guard = USERS.lock().unwrap();
+        guard.push(User {
+            name: "John".to_string(),
+            age: 20,
+        });
+        guard.push(User {
+            name: "Mary".to_string(),
+            age: 30,
+        });
+        guard.push(User {
+            name: "Joe".to_string(),
+            age: 40,
+        });
+    }
+
     dotenv().ok();
     env_logger::try_init().unwrap();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set!");
@@ -124,6 +214,7 @@ fn integration_tests() {
 
     let mut operation_map: HashMap<String, Arc<dyn Operation>> = HashMap::new();
     operation_map.insert("A".to_string(), Arc::new(operation_a));
+    operation_map.insert("GetUsers".to_string(), Arc::new(GetUsers {}));
     let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
     let facade = WorkflowFacade::new(state.clone(), registry, executor, runner.clone());

@@ -69,6 +69,7 @@ pub struct WorkflowData {
 
 /// Represents the status of a Workflow at a given point in time of the execution.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", content = "data")]
 pub enum WorkflowStatus {
     /// Workflow is active.
     /// The vector of [NextInput] represent the operations that should be run next.
@@ -273,7 +274,7 @@ pub trait Operation: Send + Sync {
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct OperationResult {
-    result: serde_json::Value,
+    pub result: serde_json::Value,
     pub iteration: usize,
     pub created_at: DateTime<Utc>,
     pub operation_name: String,
@@ -362,8 +363,8 @@ impl OperationInput {
     }
 }
 
-/// Operation executor is the component that will typically maintain a statefull set of
-/// `Operation` instances and will delegate execution to the appropriate one.
+/// Operation executor is the component that will typically maintain a stateful set of
+/// [`Operation`] instances and will delegate execution to the appropriate one.
 /// It will also take care of the retry strategy.
 #[cfg_attr(test, automock)]
 pub trait OperationExecutor: Send + Sync {
@@ -448,8 +449,8 @@ pub enum RunResult<T> {
 /// ```
 #[macro_export]
 macro_rules! run {
-    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr) ) =>  {{
-        match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($( $arg:expr )?) ) =>  {{
+        match $crate::_run_internal!($self, $op $(< $result_type >)? ($( $arg )?)) {
             $crate::RunResult::Return(input) =>  return Ok($crate::WorkflowStatus::Active(vec![$crate::NextInput::new(input, None)])),
             $crate::RunResult::Result(r) => r
         }
@@ -458,7 +459,7 @@ macro_rules! run {
 
 #[macro_export]
 macro_rules! _run_internal {
-    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr) ) => {{
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($( $arg:expr )?) ) => {{
         let operation_name = stringify!($op).to_string();
         let iteration = $self.__state.iteration_counter(&operation_name);
         let workflow_name = $self.name();
@@ -468,7 +469,7 @@ macro_rules! _run_internal {
             .find_execution_result(operation_name.clone(), iteration)
         {
             $self.__state.increase_iteration_counter(&operation_name);
-            $crate::RunResult::Result(false) // See comment below.
+            $crate::RunResult::Result(result.result.clone()) // See comment below.
             $(
                 ; // Kind of a hack: if there is no return type, the previous line will return, otherwise
                 // this semi-colon will ignore the line above and continue with the line below as the last stmt.
@@ -482,15 +483,22 @@ macro_rules! _run_internal {
             )?
         } else {
             // Operation has no been executed.
+            let arg = {
+                ::serde_json::Value::Null
+                $(
+                    ; // Ignore the null value above and set the real arg value if args is present.
+                    $arg
+                )?
+            };
             let input =
-                $crate::OperationInput::new(workflow_name, operation_name.clone(), iteration, $arg)
+                $crate::OperationInput::new(workflow_name, operation_name.clone(), iteration, arg)
                     .unwrap();
             $self.__state.increase_iteration_counter(&operation_name);
             if let Err(e) = $op::validate_input(&input) {
-                panic!(format!(
+                return Err($crate::WorkflowError::internal_error(format!(
                     "Invalid input format for operation {}: {}",
                     operation_name, e
-                ));
+                )));
             }
             $crate::RunResult::Return(input)
         }
@@ -530,7 +538,7 @@ macro_rules! run_all {
         let mut returns = Vec::new();
 
         $(
-            match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
+            match $crate::_run_internal!($self, $op ($arg)) {
                 $crate::RunResult::Return(input) => {
                     returns.push($crate::NextInput::new(input, $wait_opt));
                 },

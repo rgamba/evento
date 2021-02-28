@@ -84,7 +84,10 @@ impl AsyncWorkflowRunner {
                         };
                         if let Ok((data, result_sender)) = recv {
                             info!("New request to process workflow id: {:?}", data.id);
-                            log::debug!("Workflow data to be processed: {:?}", data);
+                            log::debug!(
+                                "Workflow data to be processed:\n{}",
+                                serde_json::to_string_pretty(&data).unwrap()
+                            );
                             match Self::run_internal(
                                 another_state_clone.clone(),
                                 data,
@@ -145,7 +148,10 @@ impl AsyncWorkflowRunner {
             .ok_or_else(|| format_err!("Unable to find workflow with id {}", workflow_data.id,))?;
         let operation_results = state.store.get_operation_results(workflow_data.id)?;
         log::info!("Running workflow with id: {}", workflow_data.id);
-        log::debug!("Injecting results: {:?}", operation_results);
+        log::debug!(
+            "Injecting results: {}",
+            serde_json::to_string_pretty(&operation_results).unwrap()
+        );
         let workflow = workflow_registry.create_workflow(
             workflow_data.name.clone(),
             workflow_data.id,
@@ -222,9 +228,10 @@ impl AsyncWorkflowRunner {
             Err(workflow_error) => {
                 // Errors raised from workflow execution should not be expected and are
                 // not retriable, hence we'll abort the workflow.
-                error!(
+                log::debug!(
                     "Workflow execution returned unexpected error. id={}, error={:?}",
-                    workflow_data.id, workflow_error
+                    workflow_data.id,
+                    workflow_error
                 );
                 state
                     .store
