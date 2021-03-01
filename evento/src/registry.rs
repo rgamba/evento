@@ -41,6 +41,28 @@ impl WorkflowRegistry for SimpleWorkflowRegistry {
     }
 }
 
+pub struct SimpleWorkflowRegistryBuilder {
+    factories: HashMap<String, Arc<dyn WorkflowFactory>>,
+}
+
+impl SimpleWorkflowRegistryBuilder {
+    pub fn new() -> Self {
+        Self {
+            factories: HashMap::new(),
+        }
+    }
+
+    pub fn add_factory(&mut self, factory: impl WorkflowFactory + 'static) -> &mut Self {
+        self.factories
+            .insert(factory.workflow_name().to_string(), Arc::new(factory));
+        self
+    }
+
+    pub fn build(&self) -> Arc<SimpleWorkflowRegistry> {
+        Arc::new(SimpleWorkflowRegistry::new(self.factories.clone()))
+    }
+}
+
 /// Simple operation executor.
 /// This executor works like an operation router with no retries.
 pub struct SimpleOperationExecutor {
@@ -107,6 +129,28 @@ impl OperationExecutor for SimpleOperationExecutor {
             .unwrap()
             .clone();
         operation.validate_external_input(external_input)
+    }
+}
+
+pub struct SimpleOperationExecutorBuilder {
+    operation_map: HashMap<String, Arc<dyn Operation>>,
+}
+
+impl SimpleOperationExecutorBuilder {
+    pub fn new() -> Self {
+        Self {
+            operation_map: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, operation: impl Operation + 'static) -> &mut Self {
+        self.operation_map
+            .insert(operation.name().to_string(), Arc::new(operation));
+        self
+    }
+
+    pub fn build(&self) -> Arc<SimpleOperationExecutor> {
+        Arc::new(SimpleOperationExecutor::new(self.operation_map.clone()))
     }
 }
 

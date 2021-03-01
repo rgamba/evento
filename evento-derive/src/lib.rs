@@ -66,6 +66,9 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
                     #struct_name::convert_context(&context).unwrap(),
                 ))
             }
+            fn workflow_name(&self) -> &str {
+                #workflow_name
+            }
         }
     };
     let output = quote! {

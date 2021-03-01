@@ -11,7 +11,7 @@ pub mod runners;
 pub mod state;
 
 use actix_web::{HttpResponse, ResponseError};
-use anyhow::{format_err, Result};
+use anyhow::{bail, format_err, Result};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use mockall::automock;
@@ -55,6 +55,8 @@ pub trait WorkflowFactory: Send + Sync {
         context: WorkflowContext,
         execution_results: Vec<OperationResult>,
     ) -> Box<dyn Workflow>;
+
+    fn workflow_name(&self) -> &str;
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -361,6 +363,14 @@ impl OperationInput {
     pub fn value<T: DeserializeOwned>(&self) -> Result<T> {
         serde_json::from_value(self.input.clone()).map_err(|err| format_err!("{:?}", err))
     }
+
+    pub fn external_value<T: DeserializeOwned>(&self) -> Result<T> {
+        if let Some(value) = &self.external_input {
+            serde_json::from_value(value.clone()).map_err(|err| format_err!("{:?}", err))
+        } else {
+            bail!("No external input found")
+        }
+    }
 }
 
 /// Operation executor is the component that will typically maintain a stateful set of
@@ -446,6 +456,8 @@ pub enum RunResult<T> {
 /// let result: String = run!(self, GreetOperation<String>(my_name));
 /// // When no return is needed:
 /// run!(self, GreetOperation(my_name));
+/// // When no arguments are needed:
+/// run!(self, GreetOperation());
 /// ```
 #[macro_export]
 macro_rules! run {

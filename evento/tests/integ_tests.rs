@@ -5,7 +5,10 @@ use diesel::{Connection, PgConnection};
 use dotenv::dotenv;
 use evento::api::WorkflowFacade;
 use evento::db::sql_store::{DbPool, PgPool, SqlStore};
-use evento::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
+use evento::registry::{
+    SimpleOperationExecutor, SimpleOperationExecutorBuilder, SimpleWorkflowRegistry,
+    SimpleWorkflowRegistryBuilder,
+};
 use evento::runners::wait_for_workflow_to_complete;
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::State;
@@ -16,6 +19,7 @@ use evento::{
 use evento_derive::workflow;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +41,8 @@ struct User {
 lazy_static! {
     static ref USERS: Arc<Mutex<Vec<User>>> = Arc::new(Mutex::new(Vec::new()));
     static ref SHOULD_FAIL: AtomicBool = AtomicBool::new(false);
+    static ref WAIT_KEY_1: Uuid = Uuid::new_v4();
+    static ref WAIT_KEY_2: Uuid = Uuid::new_v4();
 }
 
 #[workflow]
@@ -73,13 +79,20 @@ impl Workflow for WaitWorkflow {
         let timeout = Utc::now()
             .checked_add_signed(chrono::Duration::seconds(20))
             .unwrap();
-        let result = wait!(self, A<i64>(20), WaitParams::new(Uuid::nil(), timeout));
+        let result = wait!(self, A<i64>(20), WaitParams::new(*WAIT_KEY_1, timeout));
         assert_eq!(result, 20);
         let r = run_all!(self, A(30), A(40), A(50));
         // Make sure results come in in the same order and as Value
         assert_eq!(r.get(0).unwrap(), &serde_json::Value::Number(30.into()));
         assert_eq!(r.get(1).unwrap(), &serde_json::Value::Number(40.into()));
         assert_eq!(r.get(2).unwrap(), &serde_json::Value::Number(50.into()));
+
+        let approved = wait!(self, Approve<bool>(false), WaitParams::new(*WAIT_KEY_2, timeout));
+        if !approved {
+            return Ok(WorkflowStatus::CompletedWithError(
+                WorkflowError::non_retriable_domain_error("Not approved".to_string()),
+            ));
+        }
         Ok(WorkflowStatus::Completed)
     }
 }
@@ -121,6 +134,31 @@ impl Operation for GetUsers {
 struct GetUsersFilter {
     pub name: Option<String>,
     pub min_age: Option<u32>,
+}
+
+struct Approve;
+impl Operation for Approve {
+    fn execute(&self, input: OperationInput) -> Result<Value, WorkflowError> {
+        let ext_input = input.external_value::<bool>()?;
+        operation_ok!(ext_input)
+    }
+
+    fn name(&self) -> &str {
+        "Approve"
+    }
+
+    fn validate_input(input: &OperationInput) -> Result<()>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
+
+    fn validate_external_input(&self, input: Value) -> Result<()> {
+        serde_json::from_value::<bool>(input)
+            .map(|_| ())
+            .map_err(|e| format_err!("{:?}", e))
+    }
 }
 
 struct A;
@@ -202,20 +240,18 @@ fn integration_tests() {
             new_test_db_pool(database_url.as_str()).unwrap(),
         )),
     };
-    let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
-    factories.insert(
-        "SimpleWorkflow".to_string(),
-        Arc::new(SimpleWorkflowFactory {}),
-    );
-    factories.insert("WaitWorkflow".to_string(), Arc::new(WaitWorkflowFactory {}));
-    let registry = Arc::new(SimpleWorkflowRegistry::new(factories));
 
-    let operation_a = A {};
+    let registry = SimpleWorkflowRegistryBuilder::new()
+        .add_factory(SimpleWorkflowFactory {})
+        .add_factory(WaitWorkflowFactory {})
+        .build();
 
-    let mut operation_map: HashMap<String, Arc<dyn Operation>> = HashMap::new();
-    operation_map.insert("A".to_string(), Arc::new(operation_a));
-    operation_map.insert("GetUsers".to_string(), Arc::new(GetUsers {}));
-    let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
+    let executor = SimpleOperationExecutorBuilder::new()
+        .add(A {})
+        .add(GetUsers {})
+        .add(Approve {})
+        .build();
+
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
     let facade = WorkflowFacade::new(state.clone(), registry, executor, runner.clone());
 
@@ -230,7 +266,13 @@ fn integration_tests() {
     facade.get_workflow_by_id(wf_id).unwrap().unwrap();
     thread::sleep(Duration::from_secs(3));
     facade
-        .complete_external(Uuid::nil(), serde_json::Value::Bool(true))
+        .complete_external(*WAIT_KEY_1, serde_json::Value::Bool(true))
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(3000));
+
+    facade
+        .complete_external(*WAIT_KEY_2, serde_json::Value::Bool(true))
         .unwrap();
 
     wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(5)).unwrap();
