@@ -216,7 +216,7 @@ impl AsyncWorkflowRunner {
                                     .wait_params
                                     .clone()
                                     .map(|wp| wp.timeout.unwrap_or_else(|| *INFINITE_WAIT))
-                                    .unwrap_or_else(|| Utc::now()),
+                                    .unwrap_or_else(Utc::now),
                             )
                         })
                         .collect(),

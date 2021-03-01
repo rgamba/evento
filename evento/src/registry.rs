@@ -45,13 +45,15 @@ pub struct SimpleWorkflowRegistryBuilder {
     factories: HashMap<String, Arc<dyn WorkflowFactory>>,
 }
 
-impl SimpleWorkflowRegistryBuilder {
-    pub fn new() -> Self {
+impl Default for SimpleWorkflowRegistryBuilder {
+    fn default() -> Self {
         Self {
             factories: HashMap::new(),
         }
     }
+}
 
+impl SimpleWorkflowRegistryBuilder {
     pub fn add_factory(&mut self, factory: impl WorkflowFactory + 'static) -> &mut Self {
         self.factories
             .insert(factory.workflow_name().to_string(), Arc::new(factory));
@@ -136,13 +138,15 @@ pub struct SimpleOperationExecutorBuilder {
     operation_map: HashMap<String, Arc<dyn Operation>>,
 }
 
-impl SimpleOperationExecutorBuilder {
-    pub fn new() -> Self {
+impl Default for SimpleOperationExecutorBuilder {
+    fn default() -> Self {
         Self {
             operation_map: HashMap::new(),
         }
     }
+}
 
+impl SimpleOperationExecutorBuilder {
     pub fn add(&mut self, operation: impl Operation + 'static) -> &mut Self {
         self.operation_map
             .insert(operation.name().to_string(), Arc::new(operation));

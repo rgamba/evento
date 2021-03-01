@@ -48,7 +48,7 @@ pub struct Admin {
 
 impl Admin {
     pub async fn new(facade: WorkflowFacade, port: u32) -> Result<()> {
-        let data = web::Data::new(facade.clone());
+        let data = web::Data::new(facade);
 
         task::spawn(async move {
             let data_clone = data.clone();

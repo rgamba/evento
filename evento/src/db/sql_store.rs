@@ -88,7 +88,7 @@ impl Store for SqlStore {
             .values(&data)
             .get_result::<WorkflowDTO>(&self.db_pool.get()?)
             .map_err(|err| format_err!("Unable to insert workflow: {:?}", err))?;
-        Ok(data.try_into()?)
+        data.try_into()
     }
 
     fn get_workflow(&self, workflow_id: WorkflowId) -> Result<Option<WorkflowData>> {
@@ -223,7 +223,7 @@ impl Store for SqlStore {
                 .set((input.eq(new_input_value), next_run_date.eq(Utc::now())))
                 .get_result::<OperationQueueDTO>(&con)
         })?;
-        Ok(dto.try_into()?)
+        dto.try_into()
     }
 
     fn store_execution_result(
@@ -355,7 +355,7 @@ impl Store for SqlStore {
         .set(state.eq(QueueState::Dequeued.to_string()))
         .get_result::<OperationQueueDTO>(&self.db_pool.get()?)
         .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
-        Ok(data.try_into()?)
+        data.try_into()
     }
 
     fn queue_all_operations(

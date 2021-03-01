@@ -472,7 +472,7 @@ impl Store for InMemoryStore {
                 if operation_name_ == &operation_name {
                     if let Ok(r) = result {
                         if r.iteration == iteration {
-                            element = Some((operation_name.clone(), r.clone()));
+                            element = Some((operation_name, r.clone()));
                             break;
                         }
                     }

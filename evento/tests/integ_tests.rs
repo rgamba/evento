@@ -243,12 +243,12 @@ fn integration_tests() {
         )),
     };
 
-    let registry = SimpleWorkflowRegistryBuilder::new()
+    let registry = SimpleWorkflowRegistryBuilder::default()
         .add_factory(SimpleWorkflowFactory {})
         .add_factory(WaitWorkflowFactory {})
         .build();
 
-    let executor = SimpleOperationExecutorBuilder::new()
+    let executor = SimpleOperationExecutorBuilder::default()
         .add(Echo {})
         .add(GetUsers {})
         .add(Approve {})
@@ -261,7 +261,7 @@ fn integration_tests() {
         .create_workflow(
             "WaitWorkflow".to_string(),
             "test".to_string(),
-            serde_json::to_value("test".to_string()).unwrap(),
+            serde_json::to_value(25).unwrap(),
         )
         .unwrap()
         .id;
