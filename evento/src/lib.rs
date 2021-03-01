@@ -540,17 +540,17 @@ macro_rules! _run_internal {
 /// ```
 #[macro_export]
 macro_rules! run_all {
-    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) $(with wait $wait:expr)? ),+ $(,)* ) =>  {
+    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($( $arg:expr )?) $(with wait $wait:expr)? ),+ $(,)* ) =>  {
         // The code `{None::<$crate::WaitParams> $(; Some($wait) )?}` is kind of a hack in order to
         // pass in a None value in case there is not `with wait` argument or the actual wait as optional if provided.
-        run_all!($self, $( $op $(<$result_type>)? ($arg) @wait {None::<$crate::WaitParams> $(; Some($wait) )?} ),+)
+        run_all!($self, $( $op $(<$result_type>)? ($( $arg )?) @wait {None::<$crate::WaitParams> $(; Some($wait) )?} ),+)
     };
-    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($arg:expr) @wait $wait_opt:expr ),+ $(,)* ) =>  {{
+    ( $self:ident, $( $op:ident $(<$result_type:ty>)? ($( $arg:expr )?) @wait $wait_opt:expr ),+ $(,)* ) =>  {{
         let mut results = Vec::new();
         let mut returns = Vec::new();
 
         $(
-            match $crate::_run_internal!($self, $op ($arg)) {
+            match $crate::_run_internal!($self, $op ($( $arg )?)) {
                 $crate::RunResult::Return(input) => {
                     returns.push($crate::NextInput::new(input, $wait_opt));
                 },
@@ -592,9 +592,9 @@ macro_rules! run_all {
 /// ```
 #[macro_export]
 macro_rules! wait {
-    ( $self:ident, $op:ident $(< $result_type:ty >)? ($arg:expr), $wait_params:expr ) =>  {{
+    ( $self:ident, $op:ident $(< $result_type:ty >)? ($( $arg:expr )?), $wait_params:expr ) =>  {{
 
-        match $crate::_run_internal!($self, $op $(< $result_type >)? ($arg)) {
+        match $crate::_run_internal!($self, $op $(< $result_type >)? ($( $arg )?)) {
             $crate::RunResult::Return(input) =>  {
                 let wait_input = $crate::NextInput::new(input, Some($wait_params));
                 return Ok($crate::WorkflowStatus::Active(vec![wait_input]));

@@ -35,7 +35,7 @@ CREATE INDEX operations_queue_workflow_id ON operations_queue(workflow_id);
 CREATE INDEX operations_queue_next_run_data ON operations_queue(next_run_date);
 CREATE INDEX operations_queue_state ON operations_queue(state);
 CREATE INDEX operations_queue_correlation_id ON operations_queue(correlation_id);
-CREATE UNIQUE INDEX operations_queue_external_key ON operations_queue(external_key);
+CREATE UNIQUE INDEX operations_queue_external_key ON operations_queue(external_key, state) WHERE NOT state = 'D';
 CREATE UNIQUE INDEX operations_queue_wf_id_name_iter ON operations_queue(workflow_id,operation_name,iteration);
 
 CREATE TABLE workflows (

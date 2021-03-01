@@ -53,9 +53,9 @@ struct SimpleWorkflow {
 
 impl Workflow for SimpleWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        run_all!(self, A(1), A<i64>(2));
-        run!(self, A(3));
-        run!(self, A<i64>(4));
+        run_all!(self, Echo(1), Echo<i64>(2));
+        run!(self, Echo(3));
+        run!(self, Echo<i64>(4));
         Ok(WorkflowStatus::Completed)
     }
 }
@@ -63,39 +63,41 @@ impl Workflow for SimpleWorkflow {
 #[workflow]
 struct WaitWorkflow {
     #[allow(dead_code)]
-    context: String,
+    context: u32,
 }
 
 impl Workflow for WaitWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
-        let users = run!(self, GetUsers<Vec<User>>(GetUsersFilter{name: None, min_age: Some(25)}));
+        let users = run!(self, GetUsers<Vec<User>>(GetUsersFilter{name: None, min_age: Some(self.context)}));
         assert_eq!(users.len(), 2);
-        let result = run!(self, A<i64>(10));
+        let result = run!(self, Echo<i64>(10));
         assert_eq!(result, 10);
         // When no return type is specified, it should return a Value
-        let result = run!(self, A(15));
+        let result = run!(self, Echo(15));
         assert_eq!(result, serde_json::Value::Number(15.into()));
         // Test a wait operation
         let timeout = Utc::now()
             .checked_add_signed(chrono::Duration::seconds(20))
             .unwrap();
-        let result = wait!(self, A<i64>(20), WaitParams::new(*WAIT_KEY_1, timeout));
-        assert_eq!(result, 20);
-        let r = run_all!(self, A(30), A(40), A(50));
-        // Make sure results come in in the same order and as Value
-        assert_eq!(r.get(0).unwrap(), &serde_json::Value::Number(30.into()));
-        assert_eq!(r.get(1).unwrap(), &serde_json::Value::Number(40.into()));
-        assert_eq!(r.get(2).unwrap(), &serde_json::Value::Number(50.into()));
-
-        let approved = wait!(self, Approve<bool>(false), WaitParams::new(*WAIT_KEY_2, timeout));
+        let wait_results = run_all!(self,
+            Echo(20) with wait WaitParams::new(*WAIT_KEY_1, timeout),
+            Approve() with wait WaitParams::new(*WAIT_KEY_2, timeout)
+        );
+        assert_eq!(wait_results.get(0).unwrap(), 20);
+        let approved = wait_results.get(1).unwrap().as_bool().unwrap();
         if !approved {
             return Ok(WorkflowStatus::CompletedWithError(
                 WorkflowError::non_retriable_domain_error("Not approved".to_string()),
             ));
         }
+
         Ok(WorkflowStatus::Completed)
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// Operation definitions
+// -------------------------------------------------------------------------------------------------
 
 struct GetUsers;
 impl Operation for GetUsers {
@@ -161,8 +163,8 @@ impl Operation for Approve {
     }
 }
 
-struct A;
-impl Operation for A {
+struct Echo;
+impl Operation for Echo {
     fn execute(&self, input: OperationInput) -> Result<serde_json::Value, WorkflowError> {
         if SHOULD_FAIL.load(Ordering::SeqCst) {
             SHOULD_FAIL.store(false, Ordering::SeqCst);
@@ -177,7 +179,7 @@ impl Operation for A {
     }
 
     fn name(&self) -> &str {
-        "A"
+        "Echo"
     }
 
     fn validate_input(input: &OperationInput) -> Result<()>
@@ -247,7 +249,7 @@ fn integration_tests() {
         .build();
 
     let executor = SimpleOperationExecutorBuilder::new()
-        .add(A {})
+        .add(Echo {})
         .add(GetUsers {})
         .add(Approve {})
         .build();
@@ -266,13 +268,10 @@ fn integration_tests() {
     facade.get_workflow_by_id(wf_id).unwrap().unwrap();
     thread::sleep(Duration::from_secs(3));
     facade
-        .complete_external(*WAIT_KEY_1, serde_json::Value::Bool(true))
-        .unwrap();
-
-    thread::sleep(Duration::from_millis(3000));
-
-    facade
         .complete_external(*WAIT_KEY_2, serde_json::Value::Bool(true))
+        .unwrap();
+    facade
+        .complete_external(*WAIT_KEY_1, serde_json::Value::Bool(true))
         .unwrap();
 
     wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(5)).unwrap();
