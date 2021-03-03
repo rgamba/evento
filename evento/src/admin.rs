@@ -1,8 +1,9 @@
 use crate::api::WorkflowFacade;
 use crate::state::WorkflowFilter;
 use crate::{OperationName, OperationResult, WorkflowData, WorkflowError};
+use actix_cors::Cors;
 use actix_web::web::{Json, Path};
-use actix_web::{middleware, web, App, HttpServer};
+use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
 use anyhow::format_err;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -56,7 +57,9 @@ impl Admin {
                 let data = data_clone.clone();
                 log::info!("Starting admin http server...");
                 let server = HttpServer::new(move || {
+                    let cors = Cors::default().allow_any_origin();
                     App::new()
+                        .wrap(cors)
                         .wrap(middleware::Logger::default())
                         .app_data(data.clone())
                         .service(
@@ -93,12 +96,9 @@ impl Admin {
     }
 }
 
-async fn index(
-    _facade: web::Data<WorkflowFacade>,
-) -> Result<Json<serde_json::Value>, WorkflowError> {
-    Ok(Json(serde_json::json!({
-        "service": "evento-api"
-    })))
+async fn index(_facade: web::Data<WorkflowFacade>) -> HttpResponse {
+    let html = include_str!("./admin_files/index.html");
+    HttpResponse::Ok().content_type("text/html").body(html)
 }
 
 async fn list_workflows(

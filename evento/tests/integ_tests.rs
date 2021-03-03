@@ -75,7 +75,7 @@ impl Workflow for WaitWorkflow {
         // When no return type is specified, it should return a Value
         let result = run!(self, Echo(15));
         assert_eq!(result, serde_json::Value::Number(15.into()));
-        // Test a wait operation
+        // Test fanout of wait operations
         let timeout = Utc::now()
             .checked_add_signed(chrono::Duration::seconds(20))
             .unwrap();
