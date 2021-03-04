@@ -303,7 +303,11 @@ Workflow detail view
                 {{#each history}}
                 <tr>
                     <td>
-                        <span class="badge badge-success mr-1">Success</span>
+                        {{#if is_error}}
+                        <span class="badge badge-danger mr-1" style="min-width: 50px">Error</span>
+                        {{else}}
+                        <span class="badge badge-success mr-1" style="min-width: 50px">Success</span>
+                        {{/if}}
                         <code style="color: white">{{operation_name}}</code><small class="text-muted mx-1">({{iteration}})</small>
 
                     </td>
@@ -358,9 +362,10 @@ function load_workflows() {
 function view_workflow(id) {
     $.get("http://localhost:8082/workflows/" + id, function(response) {
         console.log(response);
-        $.get("http://localhost:8082/workflows/" + id + "/history", function(history_response) {
+        $.get("http://localhost:8082/workflows/" + id + "/traces", function(history_response) {
             response.history = history_response.data;
             for (let i in response.history) {
+                response.history[i].is_error = 'Err' in response.history[i].result;
                 response.history[i].operation_input = JSON.stringify(response.history[i].operation_input);
                 response.history[i].result = JSON.stringify(response.history[i].result);
             }

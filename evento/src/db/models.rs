@@ -147,77 +147,40 @@ pub struct ExecutionResultDTO {
     pub iteration: i32,
     pub result: serde_json::Value,
     pub created_at: DateTime<Utc>,
-    pub error: Option<serde_json::Value>,
+    pub error: Option<serde_json::Value>, //TODO:deprecate
     pub operation_input: serde_json::Value,
 }
 
 impl ExecutionResultDTO {
-    pub fn to_operation_result(
-        &self,
-    ) -> anyhow::Result<anyhow::Result<OperationResult, WorkflowError>> {
-        if self.is_error {
-            if self.error.is_none() {
-                bail!(
-                    "Operation marked as errored is expected to have error body: {:?}",
-                    self
-                )
-            }
-            let error: WorkflowError = serde_json::from_value(self.error.clone().unwrap())?;
-            Ok(Err(error))
-        } else {
-            Ok(Ok(OperationResult {
-                result: self.result.clone(),
-                iteration: self.iteration as usize,
-                created_at: self.created_at,
-                operation_name: self.operation_name.clone(),
-                operation_input: serde_json::from_value(self.operation_input.clone())?,
-            }))
-        }
+    pub fn to_operation_result(&self) -> anyhow::Result<OperationResult> {
+        Ok(OperationResult {
+            result: serde_json::from_value::<Result<serde_json::Value, WorkflowError>>(
+                self.result.clone(),
+            )?,
+            iteration: self.iteration as usize,
+            created_at: self.created_at,
+            operation_name: self.operation_name.clone(),
+            operation_input: serde_json::from_value(self.operation_input.clone())?,
+        })
     }
 }
 
-impl
-    TryFrom<(
-        WorkflowId,
-        OperationName,
-        Result<OperationResult, WorkflowError>,
-    )> for ExecutionResultDTO
-{
+impl TryFrom<(WorkflowId, OperationName, OperationResult)> for ExecutionResultDTO {
     type Error = anyhow::Error;
 
     fn try_from(
-        (workflow_id, operation_name, value): (
-            WorkflowId,
-            OperationName,
-            Result<OperationResult, WorkflowError>,
-        ),
+        (workflow_id, operation_name, result): (WorkflowId, OperationName, OperationResult),
     ) -> Result<Self, Self::Error> {
         Ok(Self {
             id: Uuid::new_v4(),
             workflow_id,
-            is_error: value.is_err(),
+            is_error: result.is_error(),
             operation_name,
-            iteration: if let Ok(r) = value.clone() {
-                r.iteration as i32
-            } else {
-                -1
-            },
-            result: if let Ok(r) = value.clone() {
-                r.result
-            } else {
-                serde_json::Value::Null
-            },
+            iteration: result.iteration as i32,
+            result: serde_json::to_value(result.result.clone())?,
             created_at: Utc::now(),
-            error: if let Err(err) = value.clone() {
-                Some(serde_json::to_value(err).unwrap())
-            } else {
-                None
-            },
-            operation_input: if let Ok(r) = value {
-                serde_json::to_value(r.operation_input)?
-            } else {
-                serde_json::Value::Null
-            },
+            error: None, // TODO: deprecate
+            operation_input: serde_json::to_value(result.operation_input)?,
         })
     }
 }

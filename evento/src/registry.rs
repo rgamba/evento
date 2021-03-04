@@ -108,16 +108,12 @@ impl OperationExecutor for SimpleOperationExecutor {
             })?
             .clone();
         let result = Self::execute_internal(operation.clone(), input.clone());
-        match result {
-            Ok(res) => Ok(OperationResult::new(
-                serde_json::to_value(res).unwrap(),
-                input.iteration,
-                operation.name().into(),
-                input.clone(),
-            )
-            .unwrap()),
-            Err(err) => Err(err),
-        }
+        Ok(OperationResult::new(
+            result,
+            input.iteration,
+            operation.name().into(),
+            input.clone(),
+        )?)
     }
 
     fn validate_external_input(
@@ -155,40 +151,5 @@ impl SimpleOperationExecutorBuilder {
 
     pub fn build(&self) -> Arc<SimpleOperationExecutor> {
         Arc::new(SimpleOperationExecutor::new(self.operation_map.clone()))
-    }
-}
-
-/// Simple operation executor that routes operations and performs
-/// immediate retries in case of errors.
-pub struct RetryOperationExecutor {
-    pub max_retries: usize,
-    simple_operation_executor: SimpleOperationExecutor,
-}
-
-impl RetryOperationExecutor {
-    pub fn new(operation_map: HashMap<String, Arc<dyn Operation>>, max_retries: usize) -> Self {
-        Self {
-            max_retries,
-            simple_operation_executor: SimpleOperationExecutor::new(operation_map),
-        }
-    }
-}
-
-impl OperationExecutor for RetryOperationExecutor {
-    fn execute(&self, input: OperationInput) -> Result<OperationResult, WorkflowError> {
-        let mut retries: usize = 0;
-        loop {
-            match self.simple_operation_executor.execute(input.clone()) {
-                Ok(result) => break Ok(result),
-                Err(e) => {
-                    if e.is_retriable && retries < self.max_retries {
-                        retries += 1;
-                        continue;
-                    } else {
-                        break Err(e);
-                    }
-                }
-            }
-        }
     }
 }

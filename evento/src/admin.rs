@@ -3,7 +3,7 @@ use crate::state::WorkflowFilter;
 use crate::{OperationName, OperationResult, WorkflowData, WorkflowError};
 use actix_cors::Cors;
 use actix_web::web::{Json, Path};
-use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{middleware, web, App, HttpResponse, HttpServer};
 use anyhow::format_err;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -162,7 +162,7 @@ async fn view_workflow_history(
 async fn view_workflow_traces(
     workflow_id: Path<Uuid>,
     facade: web::Data<WorkflowFacade>,
-) -> Result<Json<ListResult<Result<OperationResult, WorkflowError>>>, WorkflowError> {
+) -> Result<Json<ListResult<OperationResult>>, WorkflowError> {
     let results = facade.get_operation_execution_traces(workflow_id.into_inner())?;
     let result = ListResult {
         data: results,

@@ -102,18 +102,30 @@ fn poll(
             for operation in operations {
                 match executor.execute(operation.input.clone()) {
                     Ok(operation_result) => {
-                        handle_execution_success(
-                            state.clone(),
-                            operation.clone(),
-                            operation_result,
-                            workflow_runner.clone(),
-                        );
+                        if !operation_result.is_error() {
+                            // Successful execution
+                            handle_execution_success(
+                                state.clone(),
+                                operation.clone(),
+                                operation_result,
+                                workflow_runner.clone(),
+                            );
+                        } else {
+                            // Recoverable failure
+                            handle_recoverable_execution_failure(
+                                state.clone(),
+                                operation.clone(),
+                                retry_strategy.clone(),
+                                operation_result,
+                            )
+                        }
                     }
-                    Err(error) => handle_execution_failure(
+                    // Non-recoverable failure
+                    Err(error) => handle_non_recoverable_execution_failure(
                         state.clone(),
                         operation.clone(),
-                        error,
                         retry_strategy.clone(),
+                        error,
                     ),
                 }
             }
@@ -145,7 +157,7 @@ fn handle_execution_success(
     if let Err(e) = state.store.store_execution_result(
         data.workflow_id,
         data.input.operation_name.clone(),
-        Ok(operation_result),
+        operation_result,
     ) {
         // This is OK, the operation will be retried.
         log::error!("Unable to store execution result: {:?}", e);
@@ -171,12 +183,13 @@ fn handle_execution_success(
     }
 }
 
-fn handle_execution_failure(
+fn handle_recoverable_execution_failure(
     state: State,
     data: OperationExecutionData,
-    error: WorkflowError,
     retry_strategy: Arc<dyn RetryStrategy>,
+    operation_result: OperationResult,
 ) {
+    let error = operation_result.clone().result.err().unwrap();
     warn!("Operation execution failed. error={:?}", error);
     let count = data.retry_count.unwrap_or(1);
     let new_run_date = retry_strategy
@@ -198,7 +211,7 @@ fn handle_execution_failure(
         if let Err(e) = state.store.store_execution_result(
             data.workflow_id,
             data.input.operation_name.clone(),
-            Err(wf_error.clone()),
+            operation_result,
         ) {
             // This is OK, the operation will be retried.
             log::error!("Unable to store execution result: {:?}", e);
@@ -229,12 +242,71 @@ fn handle_execution_failure(
         if let Err(e) = state.store.store_execution_result(
             data.workflow_id,
             data.input.operation_name.clone(),
-            Err(error),
+            operation_result,
         ) {
             // This is OK, the operation will be retried.
             log::error!("Unable to store execution result: {:?}", e);
             return;
         }
+        let mut new_data = data.clone();
+        new_data.retry_count = Some(count + 1);
+        if let Err(e) = state.store.queue_operation(new_data, new_run_date) {
+            // This is a recoverable scenario, operation will be fetched again shortly and executed again.
+            log::error!(
+                "Unable to re-queue the failed operation. workflow_id={}, error={:?}",
+                data.workflow_id,
+                e
+            );
+        }
+    }
+}
+
+fn handle_non_recoverable_execution_failure(
+    state: State,
+    data: OperationExecutionData,
+    retry_strategy: Arc<dyn RetryStrategy>,
+    error: WorkflowError,
+) {
+    warn!("Operation execution failed with a non-recoverable error. Execution result will not be persisted. error={:?}, execution_data={:?}", error, data);
+    let count = data.retry_count.unwrap_or(1);
+    let new_run_date = retry_strategy
+        .next_retry_interval(count as u64)
+        .map(|d| Utc::now().checked_add_signed(d).unwrap());
+    if new_run_date.is_none() || !error.is_retriable {
+        let wf_error = if !error.is_retriable {
+            WorkflowError {
+                is_retriable: false,
+                error_type: WorkflowErrorType::OperationExecutionError,
+                error: format!(
+                    "operation execution reached the maximum number of retries. error={}",
+                    error.error,
+                ),
+            }
+        } else {
+            error
+        };
+        if let Err(e) = state.store.dequeue_operation(
+            data.workflow_id,
+            data.input.operation_name.clone(),
+            data.input.iteration,
+        ) {
+            // This is still OK, the operation will be retried.
+            log::error!("Unable to dequeue operation: {:?}", e);
+            return;
+        }
+        log::warn!(
+            "Marking the workflow as aborted! workflow_id={}",
+            data.workflow_id
+        );
+        if let Err(e) = state
+            .store
+            .abort_workflow_with_error(data.workflow_id, wf_error)
+        {
+            // This will leave the operation in an inconsistent state.
+            //TODO:raise alert
+            log::error!("Unable to abort workflow: {:?}", e);
+        }
+    } else if let Some(new_run_date) = new_run_date {
         let mut new_data = data.clone();
         new_data.retry_count = Some(count + 1);
         if let Err(e) = state.store.queue_operation(new_data, new_run_date) {
@@ -296,7 +368,7 @@ mod test {
         .unwrap();
         let wf_id = Uuid::new_v4();
         let expected_result = OperationResult::new(
-            String::from("Good"),
+            Ok(String::from("Good")),
             0,
             String::from("operation_test"),
             test_input,
@@ -367,15 +439,22 @@ mod test {
             .times(0)
             .returning(|_| Ok(WorkflowStatus::Completed));
         let mut executor = MockOperationExecutor::new();
+        let operation_input_c = operation_input.clone();
         executor
             .expect_execute()
             .with(eq(operation_input.clone()))
-            .returning(|_| {
-                Err(WorkflowError {
-                    error: "test error".to_string(),
-                    is_retriable: true,
-                    error_type: WorkflowErrorType::InternalError,
-                })
+            .returning(move |_| {
+                Ok(OperationResult::new::<bool>(
+                    Err(WorkflowError {
+                        error: "test error".to_string(),
+                        is_retriable: true,
+                        error_type: WorkflowErrorType::InternalError,
+                    }),
+                    0,
+                    String::from("operation_test"),
+                    operation_input_c.clone(),
+                )
+                .unwrap())
             });
         let state = create_test_state();
         let poller = Poller::start_polling(

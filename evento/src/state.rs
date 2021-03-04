@@ -54,7 +54,7 @@ pub trait Store: Send + Sync {
     fn get_operation_results_with_errors(
         &self,
         workflow_id: WorkflowId,
-    ) -> Result<Vec<Result<OperationResult, WorkflowError>>>;
+    ) -> Result<Vec<OperationResult>>;
 
     /// Fetch operations that whose run_date is less or equal to the current now provided.
     ///
@@ -91,7 +91,7 @@ pub trait Store: Send + Sync {
         &self,
         workflow_id: WorkflowId,
         operation_name: OperationName,
-        result: Result<OperationResult, WorkflowError>,
+        result: OperationResult,
     ) -> Result<()>;
 
     /// Update the given Workflow and mark it as completed.
@@ -166,8 +166,7 @@ pub struct OperationExecutionData {
 }
 
 type InMemoryQueue = Mutex<Vec<(OperationExecutionData, DateTime<Utc>, &'static str)>>;
-type OperationResults =
-    Mutex<HashMap<WorkflowId, Vec<(OperationName, Result<OperationResult, WorkflowError>)>>>;
+type OperationResults = Mutex<HashMap<WorkflowId, Vec<(OperationName, OperationResult)>>>;
 
 pub struct InMemoryStore {
     pub operation_results: OperationResults,
@@ -248,8 +247,7 @@ impl Store for InMemoryStore {
             Ok(results
                 .clone()
                 .into_iter()
-                .filter(|(_, result)| result.is_ok())
-                .map(|(name, result)| (name, result.unwrap()))
+                .filter(|(_, result)| !result.is_error())
                 .map(|(_, result)| result)
                 .collect())
         } else {
@@ -260,7 +258,7 @@ impl Store for InMemoryStore {
     fn get_operation_results_with_errors(
         &self,
         workflow_id: WorkflowId,
-    ) -> Result<Vec<Result<OperationResult, WorkflowError>>> {
+    ) -> Result<Vec<OperationResult>> {
         let guard = self.operation_results.lock().unwrap();
         if let Some(results) = guard.get(&workflow_id) {
             Ok(results
@@ -331,7 +329,7 @@ impl Store for InMemoryStore {
         &self,
         workflow_id: WorkflowId,
         operation_name: OperationName,
-        result: Result<OperationResult, WorkflowError>,
+        result: OperationResult,
     ) -> Result<()> {
         let mut guard = self.operation_results.lock().unwrap();
         if !guard.contains_key(&workflow_id) {
@@ -470,11 +468,9 @@ impl Store for InMemoryStore {
             let mut element = None;
             for (operation_name_, result) in results {
                 if operation_name_ == &operation_name {
-                    if let Ok(r) = result {
-                        if r.iteration == iteration {
-                            element = Some((operation_name, r.clone()));
-                            break;
-                        }
+                    if result.iteration == iteration {
+                        element = Some((operation_name, result.clone()));
+                        break;
                     }
                 }
                 new_results.push((operation_name.clone(), result.clone()))
@@ -533,21 +529,21 @@ pub mod tests {
         )
         .unwrap();
         let operation_result_1 = OperationResult::new(
-            result_content.clone(),
+            Ok(result_content.clone()),
             0,
             operation_name.clone(),
             test_input.clone(),
         )
         .unwrap();
         let operation_result_2 = OperationResult::new(
-            result_content.clone(),
+            Ok(result_content.clone()),
             1,
             operation_name.clone(),
             test_input.clone(),
         )
         .unwrap();
         let operation_result_3 = OperationResult::new(
-            result_content.clone(),
+            Ok(result_content.clone()),
             2,
             operation_name.clone(),
             test_input.clone(),
@@ -563,13 +559,13 @@ pub mod tests {
             )
             .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_1))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result_1)
             .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result_2)
             .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_3))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result_3)
             .unwrap();
         store
             .delete_operation_results(wf_id, operation_name, 1)
@@ -618,24 +614,24 @@ pub mod tests {
         .unwrap();
         let result_content_2 = "test_result2".to_string();
         let operation_result = OperationResult::new(
-            result_content.clone(),
+            Ok(result_content.clone()),
             0,
             operation_name.clone(),
             input.clone(),
         )
         .unwrap();
         let operation_result_2 = OperationResult::new(
-            result_content_2.clone(),
+            Ok(result_content_2.clone()),
             0,
             operation_name.clone(),
             input.clone(),
         )
         .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result)
             .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result_2)
             .unwrap();
         // Fetch all execution results
         let results = store.get_operation_results(wf_id).unwrap();

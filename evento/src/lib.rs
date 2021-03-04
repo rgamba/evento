@@ -276,7 +276,7 @@ pub trait Operation: Send + Sync {
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct OperationResult {
-    pub result: serde_json::Value,
+    pub result: Result<serde_json::Value, WorkflowError>,
     pub iteration: usize,
     pub created_at: DateTime<Utc>,
     pub operation_name: String,
@@ -286,7 +286,7 @@ pub struct OperationResult {
 
 impl OperationResult {
     pub fn new<T>(
-        result: T,
+        result: Result<T, WorkflowError>,
         iteration: usize,
         operation_name: String,
         operation_input: OperationInput,
@@ -295,7 +295,10 @@ impl OperationResult {
         T: Serialize + Clone,
     {
         Ok(Self {
-            result: serde_json::to_value(result)?,
+            result: match result {
+                Ok(result) => Ok(serde_json::to_value(result)?),
+                Err(e) => Err(e),
+            },
             iteration,
             operation_name,
             created_at: Utc::now(),
@@ -303,9 +306,15 @@ impl OperationResult {
         })
     }
 
+    pub fn is_error(&self) -> bool {
+        matches!(self.result, Err(_))
+    }
+
     pub fn result<T: DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_value(self.result.clone())
-            .map_err(|err| format_err!("Unable to convert result: {:?}", err))
+        match self.result.clone() {
+            Ok(r) => Ok(serde_json::from_value(r)?),
+            Err(e) => Err(format_err!("Unable to convert value: {:?}", e)),
+        }
     }
 }
 
@@ -378,8 +387,12 @@ impl OperationInput {
 /// It will also take care of the retry strategy.
 #[cfg_attr(test, automock)]
 pub trait OperationExecutor: Send + Sync {
-    /// Executes the given operation and returns an [OperationResult] in case of success or
-    /// [WorkflowError] in case any expected or unexpected error happened.
+    /// Executes the given operation and returns an [OperationResult] with the execution result.
+    /// Even if the execution was unsuccessful, the execution error must be carried inside the
+    /// result.
+    ///
+    /// This method will only return [Err] in case of an internal, unexpected infrastructure error,
+    /// like for instance if the workflow operation is not registered, etc.
     ///
     /// This function should not panic.
     ///

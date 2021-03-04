@@ -2,8 +2,8 @@ use crate::poller::{FixedRetryStrategy, Poller};
 use crate::state::WorkflowFilter;
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
-    OperationResult, WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName,
-    WorkflowRunner, WorkflowStatus,
+    OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
+    WorkflowStatus,
 };
 use crate::{OperationExecutor, WorkflowRegistry};
 use anyhow::{format_err, Result};
@@ -198,7 +198,7 @@ impl WorkflowFacade {
     pub fn get_operation_execution_traces(
         &self,
         workflow_id: WorkflowId,
-    ) -> Result<Vec<Result<OperationResult, WorkflowError>>> {
+    ) -> Result<Vec<OperationResult>> {
         self.state
             .store
             .get_operation_results_with_errors(workflow_id)

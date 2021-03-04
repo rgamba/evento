@@ -142,7 +142,7 @@ impl Store for SqlStore {
             .order(created_at.asc())
             .load::<ExecutionResultDTO>(&self.db_pool.get()?)?
             .into_iter()
-            .map(|dto| dto.to_operation_result()?)
+            .map(|dto| dto.to_operation_result())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format_err!("{:?}", e))?;
         Ok(results)
@@ -151,7 +151,7 @@ impl Store for SqlStore {
     fn get_operation_results_with_errors(
         &self,
         workflow_id_: WorkflowId,
-    ) -> Result<Vec<Result<OperationResult, WorkflowError>>> {
+    ) -> Result<Vec<OperationResult>> {
         use crate::db::schema::execution_results::dsl::*;
         let results = execution_results
             .filter(workflow_id.eq(workflow_id_))
@@ -230,7 +230,7 @@ impl Store for SqlStore {
         &self,
         workflow_id_: WorkflowId,
         operation_name_: OperationName,
-        result_: Result<OperationResult, WorkflowError>,
+        result_: OperationResult,
     ) -> Result<()> {
         use crate::db::schema::execution_results::dsl::*;
         let dto = ExecutionResultDTO::try_from((workflow_id_, operation_name_, result_))?;
@@ -502,24 +502,24 @@ pub mod tests {
         .unwrap();
         let result_content_2 = "test_result2".to_string();
         let operation_result = OperationResult::new(
-            result_content.clone(),
+            Ok(result_content.clone()),
             0,
             operation_name.clone(),
             input.clone(),
         )
         .unwrap();
         let operation_result_2 = OperationResult::new(
-            result_content_2.clone(),
+            Ok(result_content_2.clone()),
             1,
             operation_name.clone(),
             input.clone(),
         )
         .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result)
             .unwrap();
         store
-            .store_execution_result(wf_id, operation_name.clone(), Ok(operation_result_2))
+            .store_execution_result(wf_id, operation_name.clone(), operation_result_2)
             .unwrap();
         // Fetch all execution results
         let results = store.get_operation_results(wf_id).unwrap();

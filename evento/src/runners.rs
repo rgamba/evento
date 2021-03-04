@@ -286,7 +286,7 @@ pub fn wait_for_workflow_to_complete(
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{MockWorkflow, MockWorkflowFactory, WorkflowError, WorkflowFactory, WorkflowId};
+    use crate::{MockWorkflow, MockWorkflowFactory, WorkflowError, WorkflowFactory};
     use std::collections::HashMap;
     use uuid::Uuid;
 
