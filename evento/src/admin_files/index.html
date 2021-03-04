@@ -192,7 +192,9 @@ Workflow list view
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="btnGroupDrop1">
                         <li><a class="dropdown-item" href="#workflow/{{id}}" onclick="view_workflow('{{id}}');">View</a></li>
-                        <li><a class="dropdown-item" href="#">Trace history</a></li>
+                        {{#if_eq status.status 'Error'}}
+                        <li><a class="dropdown-item" href="#" onclick="retry_workflow('{{id}}'); return false">Retry</a></li>
+                        {{/if_eq}}
                     </ul>
                 </div>
             </td>
@@ -223,7 +225,7 @@ Workflow detail view
                     </button>
                     <ul class="dropdown-menu">
                         <li><a class="dropdown-item" href="#" onclick="run_workflow('{{id}}'); return false">Re-run now</a></li>
-                        <li><a class="dropdown-item" href="#">Retry last failed operation</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="retry_workflow('{{id}}'); return false">Retry workflow</a></li>
                         <li><a class="dropdown-item" href="#">Cancel workflow</a></li>
                     </ul>
                 </div>
@@ -314,7 +316,7 @@ Workflow detail view
                                 Actions
                             </button>
                             <ul class="dropdown-menu" aria-labelledby="btnGroupDrop1">
-                                <li><a class="dropdown-item" href="#" onclick="replay('{{id}}'); return false">Replay from this point</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="replay_workflow('{{operation_name}}', '{{iteration}}', '{{../id}}'); return false">Replay from this point</a></li>
                             </ul>
                         </div>
                     </td>
@@ -365,6 +367,28 @@ function view_workflow(id) {
             response.context = JSON.stringify(response.context, null, 4);
             $("#main_content").html(workflow_detail_view(response));
         });
+    });
+}
+
+function retry_workflow(id) {
+    $.get("http://localhost:8082/workflows/" + id +"/retry", function(response) {
+        view_workflow(id);
+    });
+}
+
+function replay_workflow(operation, iteration, id) {
+    $.ajax({
+        url: "http://localhost:8082/workflows/" + id +"/replay",
+        type: 'post',
+        data: JSON.stringify({
+            operation_name: operation,
+            iteration: iteration,
+        }),
+        contentType: 'application/json',
+        dataType: 'json',
+        success: function(response) {
+            view_workflow(id);
+        }
     });
 }
 
