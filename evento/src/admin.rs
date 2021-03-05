@@ -57,7 +57,7 @@ impl Admin {
                 let data = data_clone.clone();
                 log::info!("Starting admin http server...");
                 let server = HttpServer::new(move || {
-                    let cors = Cors::default().allow_any_origin();
+                    let cors = Cors::permissive();
                     App::new()
                         .wrap(cors)
                         .wrap(middleware::Logger::default())
@@ -69,8 +69,9 @@ impl Admin {
                                 .route("/{workflow_id}/replay", web::post().to(replay_workflow))
                                 .route("/{workflow_id}/retry", web::get().to(retry_workflow))
                                 .route("/{workflow_id}", web::get().to(view_workflow))
-                                .route("", web::get().to(list_workflows))
                                 .route("/{workflow_id}/cancel", web::get().to(cancel_workflow))
+                                .route("/{workflow_id}/run", web::get().to(run_workflow))
+                                .route("", web::get().to(list_workflows))
                                 //.route("/{workflow_id}/replay", web::post().to(replay_workflow))
                                 // .route(
                                 //     "/complete_external/{external_key}",
@@ -139,6 +140,14 @@ async fn cancel_workflow(
     facade: web::Data<Evento>,
 ) -> Result<Json<()>, WorkflowError> {
     facade.cancel_workflow(workflow_id.into_inner(), String::new())?;
+    Ok(Json(()))
+}
+
+async fn run_workflow(
+    workflow_id: Path<Uuid>,
+    facade: web::Data<Evento>,
+) -> Result<Json<()>, WorkflowError> {
+    facade.run_workflow(workflow_id.into_inner())?;
     Ok(Json(()))
 }
 

@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel::r2d2::ConnectionManager;
+use diesel::sql_types::{Int4, Integer, Text, Varchar};
 use serde::export::Formatter;
 use serde_json::Value;
 use std::convert::{TryFrom, TryInto};
@@ -290,7 +291,7 @@ impl Store for SqlStore {
             status_data.eq(new_status_value),
         ))
         .get_result::<WorkflowDTO>(&self.db_pool.get()?)
-        .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        .map_err(|err| format_err!("Unable to cancel workflow: {}", err))?;
         Ok(())
     }
 
@@ -390,11 +391,39 @@ impl Store for SqlStore {
 
     fn delete_operation_results(
         &self,
-        _workflow_id: WorkflowId,
-        _operation_name: OperationName,
-        _iteration: usize,
+        workflow_id: WorkflowId,
+        operation_name: OperationName,
+        iteration: usize,
     ) -> Result<()> {
-        unimplemented!()
+        // In a single transaction, delete all operation results created on or after the creation of
+        // the operation matching with the (operation_name, iteration) combo provided.
+        let con = self.db_pool.get()?;
+        con.transaction::<(), diesel::result::Error, _>(|| {
+            let sql = r#"
+            DELETE FROM execution_results 
+            WHERE created_at >= (
+                SELECT created_at FROM execution_results
+                WHERE workflow_id = $1
+                    AND operation_name = $2
+                    AND iteration = $3
+                LIMIT 1
+            )
+            "#;
+            diesel::sql_query(sql)
+                .bind::<diesel::pg::types::sql_types::Uuid, _>(workflow_id)
+                .bind::<Varchar, _>(operation_name)
+                .bind::<Int4, _>(iteration as i32)
+                .execute(&con)?;
+            let sql = r#"
+            UPDATE operations_queue SET state = 'D'
+            WHERE workflow_id = $1"#;
+            diesel::sql_query(sql)
+                .bind::<diesel::pg::types::sql_types::Uuid, _>(workflow_id)
+                .execute(&con)?;
+            Ok(())
+        })
+        .map_err(|err| format_err!("{:?}", err))
+        .map(|_| ())
     }
 }
 
@@ -411,6 +440,65 @@ pub mod tests {
 
     pub fn create_store() -> SqlStore {
         SqlStore::new_with_pool(new_test_db_pool("postgresql://gamba@127.0.0.1/evento").unwrap())
+    }
+
+    #[test]
+    fn test_delete_operation_results() {
+        let store = create_store();
+        let now = Utc::now();
+        let wf_id = Uuid::new_v4();
+        let item = OperationExecutionData {
+            workflow_id: wf_id,
+            correlation_id: String::new(),
+            retry_count: None,
+            input: OperationInput::new(
+                "wf".to_string(),
+                "operation".to_string(),
+                0,
+                serde_json::Value::Null,
+            )
+            .unwrap(),
+        };
+        store.queue_operation(item, now).unwrap();
+        let operation_result1 = OperationResult::new(
+            Ok(true),
+            0,
+            "operation".to_string(),
+            OperationInput::new("test".to_string(), "test".to_string(), 0, json!({})).unwrap(),
+        )
+        .unwrap();
+        let operation_result2 = OperationResult::new(
+            Ok(true),
+            1,
+            "operation".to_string(),
+            OperationInput::new("test".to_string(), "test".to_string(), 0, json!({})).unwrap(),
+        )
+        .unwrap();
+        let operation_result3 = OperationResult::new(
+            Ok(true),
+            2,
+            "operation".to_string(),
+            OperationInput::new("test".to_string(), "test".to_string(), 0, json!({})).unwrap(),
+        )
+        .unwrap();
+        store
+            .store_execution_result(wf_id, "operation".to_string(), operation_result1)
+            .unwrap();
+        store
+            .store_execution_result(wf_id, "operation".to_string(), operation_result2)
+            .unwrap();
+        store
+            .store_execution_result(wf_id, "operation".to_string(), operation_result3)
+            .unwrap();
+        // Now delete execution results
+        store
+            .delete_operation_results(wf_id, "operation".to_string(), 1)
+            .unwrap();
+        // Check there are no elements on the queue
+        let queue_elems = store.fetch_operations(now).unwrap();
+        assert!(queue_elems.is_empty());
+        let results = store.get_operation_results(wf_id).unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     #[test]

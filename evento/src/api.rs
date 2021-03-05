@@ -257,9 +257,21 @@ impl Evento {
         operation_name: OperationName,
         iteration: OperationIteration,
     ) -> Result<()> {
+        let workflow = self
+            .state
+            .store
+            .get_workflow(workflow_id)?
+            .ok_or_else(|| format_err!("Invalid workflow ID"))?;
         self.state
             .store
-            .delete_operation_results(workflow_id, operation_name, iteration)
+            .delete_operation_results(workflow_id, operation_name, iteration)?;
+        self.workflow_runner
+            .run(workflow)
+            .map_err(|e| {
+                log::error!("Error while running the workflow: {:?}", e);
+                format_err!("Workflow run returned the following error: {:?}", e)
+            })
+            .map(|_| ())
     }
 
     /// Retry the workflow from the latest successful step.
@@ -302,7 +314,7 @@ impl Evento {
             .store
             .cancel_workflow(workflow_id, reason)
             .map_err(|err| {
-                log::error!("Failed to get operation results. error={:?}", err);
+                log::error!("Failed to cancel workflow. error={:?}", err);
                 format_err!("Unable to cancel workflow: {:?}", err)
             })
             .map(|_| ())
@@ -315,6 +327,21 @@ impl Evento {
     /// - `filters` - The filters to use.
     pub fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
         self.state.store.get_workflows(filters)
+    }
+
+    pub fn run_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
+        let workflow = self
+            .state
+            .store
+            .get_workflow(workflow_id)?
+            .ok_or_else(|| format_err!("Invalid workflow ID"))?;
+        self.workflow_runner
+            .run(workflow)
+            .map_err(|e| {
+                log::error!("Error while running the workflow: {:?}", e);
+                format_err!("Workflow run returned the following error: {:?}", e)
+            })
+            .map(|_| ())
     }
 
     pub fn stop(&self) -> Result<()> {

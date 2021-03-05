@@ -147,8 +147,10 @@ pub trait Store: Send + Sync {
 
     fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>>;
 
-    /// Removes the operation result provided **and all subsequent operations** and
-    /// will schedule the workflow to run as soon as possible in atomic fashion.
+    /// Removes the operation result provided **and all subsequent operations**
+    ///
+    /// This operation will effectively recreate history, so its important that the implementation
+    /// also dequeues any pending operation.
     fn delete_operation_results(
         &self,
         workflow_id: WorkflowId,

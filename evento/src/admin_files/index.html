@@ -225,7 +225,7 @@ Workflow detail view
                     <ul class="dropdown-menu">
                         <li><a class="dropdown-item" href="#" onclick="run_workflow('{{id}}'); return false">Re-run now</a></li>
                         <li><a class="dropdown-item" href="#" onclick="retry_workflow('{{id}}'); return false">Retry workflow</a></li>
-                        <li><a class="dropdown-item" href="#">Cancel workflow</a></li>
+                        <li><a class="dropdown-item" href="#" onclick="cancel_workflow('{{id}}'); return false">Cancel workflow</a></li>
                     </ul>
                 </div>
             </div>
@@ -425,6 +425,26 @@ function retry_workflow(id) {
 }
 
 /**
+ * Retry workflow action
+ * @param id Workflow if
+ */
+function cancel_workflow(id) {
+    $.get("http://localhost:8082/workflows/" + id +"/cancel", function(response) {
+        view_workflow(id);
+    });
+}
+
+/**
+ * Run workflows
+ * @param id Workflow if
+ */
+function run_workflow(id) {
+    $.get("http://localhost:8082/workflows/" + id +"/run", function(response) {
+        view_workflow(id);
+    });
+}
+
+/**
  * Replay workflow action
  * @param operation Operation name
  * @param iteration Operation iteration
@@ -436,7 +456,7 @@ function replay_workflow(operation, iteration, id) {
         method: 'POST',
         data: JSON.stringify({
             operation_name: operation,
-            iteration: iteration,
+            iteration: parseInt(iteration),
         }),
         contentType: 'application/json',
         dataType: 'json',

@@ -4,7 +4,8 @@ use anyhow::format_err;
 use chrono::Utc;
 use demo::{FetchUsers, StoreResult, TestContext, TestWorkflowFactory, WaitAndFilterUsers};
 use evento::admin::Admin;
-use evento::api::Evento;
+use evento::api::{Evento, EventoBuilder};
+use evento::db::sql_store::SqlStore;
 use evento::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::{InMemoryStore, State};
@@ -24,7 +25,7 @@ pub type AppFacade = web::Data<Evento>;
 async fn index(facade: AppFacade) -> Result<Json<WorkflowData>, WorkflowError> {
     let workflow = facade.create_workflow(
         "TestWorkflow".to_string(),
-        "test".to_string(),
+        Uuid::new_v4().to_string(),
         serde_json::to_value(TestContext {
             keyword: "test".to_string(),
             age_filter: 20,
@@ -43,22 +44,15 @@ async fn complete_external(
 }
 
 fn create_facade() -> Evento {
-    let state = State {
-        store: Arc::new(InMemoryStore::default()),
-    };
-    let mut factories: HashMap<String, Arc<dyn WorkflowFactory>> = HashMap::new();
-    factories.insert("TestWorkflow".to_string(), Arc::new(TestWorkflowFactory {}));
-    let registry = Arc::new(SimpleWorkflowRegistry::new(factories));
-    let mut operation_map: HashMap<String, Arc<dyn Operation>> = HashMap::new();
-    operation_map.insert("FetchUsers".to_string(), Arc::new(FetchUsers {}));
-    operation_map.insert("StoreResult".to_string(), Arc::new(StoreResult {}));
-    operation_map.insert(
-        "WaitAndFilterUsers".to_string(),
-        Arc::new(WaitAndFilterUsers {}),
-    );
-    let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
-    let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    Evento::new(state.clone(), registry.clone(), executor.clone(), runner)
+    //return EventoBuilder::new(InMemoryStore::default())
+    return EventoBuilder::new(
+        SqlStore::new("postgresql://gamba@127.0.0.1/evento".to_string()).unwrap(),
+    )
+    .register_workflow(TestWorkflowFactory::default())
+    .register_operation(FetchUsers {})
+    .register_operation(StoreResult {})
+    .register_operation(WaitAndFilterUsers {})
+    .build();
 }
 
 #[actix_web::main]
