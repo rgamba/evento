@@ -1,7 +1,7 @@
 use crate::db::models::{ExecutionResultDTO, OperationQueueDTO, WorkflowDTO};
 use crate::state::{OperationExecutionData, Store, WorkflowFilter, SAFE_RETRY_DURATION};
 use crate::{
-    CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
+    CorrelationId, ExternalInputKey, NextInput, OperationInput, OperationName, OperationResult,
     WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
 };
 use anyhow::{format_err, Result};
@@ -294,8 +294,18 @@ impl Store for SqlStore {
         Ok(())
     }
 
-    fn mark_active(&self, _workflow_id: WorkflowId) -> Result<()> {
-        unimplemented!()
+    fn mark_active(&self, workflow_id: WorkflowId, next_input: Vec<NextInput>) -> Result<()> {
+        use crate::db::schema::workflows::dsl::*;
+        let new_status = WorkflowStatus::Active(next_input);
+        let new_status_value = serde_json::to_value(new_status.clone()).unwrap();
+        diesel::update(workflows.filter(id.eq(workflow_id)))
+            .set((
+                status.eq(new_status.to_string_without_data()),
+                status_data.eq(new_status_value),
+            ))
+            .get_result::<WorkflowDTO>(&self.db_pool.get()?)
+            .map_err(|err| format_err!("Unable to dequeue operation: {}", err))?;
+        Ok(())
     }
 
     fn abort_workflow_with_error(

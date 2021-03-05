@@ -202,10 +202,10 @@ Workflow list view
         {{/each}}
         </tbody>
     </table>
-    <div class="btn-group" role="group" aria-label="Basic example">
-        <button type="button" class="btn btn-secondary">Prev page</button>
-        <button type="button" class="btn btn-secondary">Next page</button>
-    </div>
+<!--    <div class="btn-group" role="group" aria-label="Basic example">-->
+<!--        <button type="button" class="btn btn-secondary">Prev page</button>-->
+<!--        <button type="button" class="btn btn-secondary">Next page</button>-->
+<!--    </div>-->
 </script>
 
 <!----------------------------------------------------------------------------------------------------------------------
@@ -326,6 +326,23 @@ Workflow detail view
                     </td>
                 </tr>
                 {{/each}}
+                {{#each next_inputs}}
+                <tr style="opacity: 60%">
+                    <td>
+                        <span class="badge badge-primary mr-1" style="min-width: 50px">Pending</span>
+                        <code style="color: white">{{input.operation_name}}</code><small class="text-muted mx-1">({{input.iteration}})</small>
+                    </td>
+                    <td>
+                        <a href="#" onclick="show_data('Operation input', '{{to_json input.input}}');return false">View input</a>
+                        {{#if wait_params}}
+                        <a href="#" class="ml-1" onclick="show_data('Wait parameters', '{{to_json wait_params}}');return false">Wait params</a>
+                        {{/if}}
+                    </td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td></td>
+                </tr>
+                {{/each}}
                 </tbody>
             </table>
         </div>
@@ -347,6 +364,10 @@ Handlebars.registerHelper('if_eq', function(a, b, opts) {
     }
 });
 
+Handlebars.registerHelper('to_json', function (obj)  {
+    return JSON.stringify(obj);
+});
+
 // View definitions
 const workflows_view = Handlebars.compile($('#workflows_view').html());
 const workflow_detail_view = Handlebars.compile($('#workflow_detail_view').html());
@@ -362,11 +383,15 @@ function load_workflows() {
 function view_workflow(id) {
     $.get("http://localhost:8082/workflows/" + id, function(response) {
         console.log(response);
+        if (response.status.status === "Active") {
+            response.next_inputs = response.status.data;
+        }
         $.get("http://localhost:8082/workflows/" + id + "/traces", function(history_response) {
             response.history = history_response.data;
             for (let i in response.history) {
                 response.history[i].is_error = 'Err' in response.history[i].result;
                 response.history[i].operation_input = JSON.stringify(response.history[i].operation_input);
+                console.log(response.history[i].result);
                 response.history[i].result = JSON.stringify(response.history[i].result);
             }
             response.context = JSON.stringify(response.context, null, 4);
@@ -384,7 +409,7 @@ function retry_workflow(id) {
 function replay_workflow(operation, iteration, id) {
     $.ajax({
         url: "http://localhost:8082/workflows/" + id +"/replay",
-        type: 'post',
+        method: 'POST',
         data: JSON.stringify({
             operation_name: operation,
             iteration: iteration,
@@ -398,7 +423,11 @@ function replay_workflow(operation, iteration, id) {
 }
 
 function show_data(title, content) {
-    content = JSON.stringify(JSON.parse(content), null, 4);
+    try {
+        content = JSON.stringify(JSON.parse(content), null, 4);
+    } catch (e) {
+    }
+
     $("#workflow_input_content").html(content);
     $("#workflow_input .modal-title").html(title);
     new bootstrap.Modal(document.getElementById("workflow_input")).toggle();

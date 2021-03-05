@@ -1,5 +1,5 @@
 use crate::{
-    CorrelationId, ExternalInputKey, OperationInput, OperationName, OperationResult,
+    CorrelationId, ExternalInputKey, NextInput, OperationInput, OperationName, OperationResult,
     WorkflowContext, WorkflowData, WorkflowError, WorkflowId, WorkflowName, WorkflowStatus,
 };
 use anyhow::{bail, format_err, Result};
@@ -108,7 +108,7 @@ pub trait Store: Send + Sync {
 
     /// Manually mark the workflow as active.
     /// If the workflow's status is not active, this will be a no-op.
-    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()>;
+    fn mark_active(&self, workflow_id: WorkflowId, next_input: Vec<NextInput>) -> Result<()>;
 
     /// Abort the workflow.
     /// If the workflow's status is not active, this will be a no-op.
@@ -354,11 +354,11 @@ impl Store for InMemoryStore {
         }
     }
 
-    fn mark_active(&self, workflow_id: WorkflowId) -> Result<()> {
+    fn mark_active(&self, workflow_id: WorkflowId, next_inputs: Vec<NextInput>) -> Result<()> {
         let mut guard = self.workflows.lock().unwrap();
         match guard.iter_mut().find(|wf| wf.id == workflow_id) {
             Some(wf) => {
-                wf.status = WorkflowStatus::active();
+                wf.status = WorkflowStatus::Active(next_inputs);
                 Ok(())
             }
             None => bail!("Unable to find workflow with id: {}", workflow_id),

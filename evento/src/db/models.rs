@@ -39,14 +39,11 @@ impl TryInto<WorkflowData> for WorkflowDTO {
 
     fn try_into(self) -> Result<WorkflowData, Self::Error> {
         let status = match self.status.as_str() {
-            "Active" => WorkflowStatus::active(),
             "Completed" => WorkflowStatus::Completed,
-            "CompletedWithError" | "WaitForExternal" | "RunNext" | "Error" => {
-                serde_json::from_value::<WorkflowStatus>(
-                    self.status_data
-                        .ok_or_else(|| format_err!("status_data is required to be not null"))?,
-                )?
-            }
+            "CompletedWithError" | "Active" | "Error" => serde_json::from_value::<WorkflowStatus>(
+                self.status_data
+                    .ok_or_else(|| format_err!("status_data is required to be not null"))?,
+            )?,
             "Cancelled" => WorkflowStatus::Cancelled,
             _ => bail!("Invalid workflow status provided: {:?}", self.status),
         };

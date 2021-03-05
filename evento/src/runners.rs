@@ -195,6 +195,7 @@ impl AsyncWorkflowRunner {
                     workflow_data.id,
                     inputs
                 );
+                state.store.mark_active(workflow_data.id, inputs.clone())?;
                 state.store.queue_all_operations(
                     inputs
                         .iter()

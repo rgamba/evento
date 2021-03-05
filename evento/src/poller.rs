@@ -338,6 +338,26 @@ impl RetryStrategy for FixedRetryStrategy {
     }
 }
 
+pub struct ExponentialBackoffRetryStrategy {
+    max_retries: u64,
+}
+
+impl ExponentialBackoffRetryStrategy {
+    pub fn new(max_retries: u64) -> Self {
+        Self { max_retries }
+    }
+}
+
+impl RetryStrategy for ExponentialBackoffRetryStrategy {
+    fn next_retry_interval(&self, retry_count: u64) -> Option<chrono::Duration> {
+        if retry_count >= self.max_retries {
+            return None;
+        }
+        let delay_secs = 2_i64.checked_pow(retry_count as u32).unwrap_or(i64::MAX);
+        Some(chrono::Duration::seconds(delay_secs))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::{

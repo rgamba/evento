@@ -1,4 +1,4 @@
-use crate::poller::{FixedRetryStrategy, Poller};
+use crate::poller::{ExponentialBackoffRetryStrategy, FixedRetryStrategy, Poller};
 use crate::state::WorkflowFilter;
 use crate::{
     state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
@@ -38,10 +38,7 @@ impl WorkflowFacade {
             state.clone(),
             operation_executor.clone(),
             workflow_runner.clone(),
-            Arc::new(FixedRetryStrategy {
-                interval: chrono::Duration::seconds(1),
-                max_retries: 10,
-            }),
+            Arc::new(ExponentialBackoffRetryStrategy::new(10)),
         );
         Self {
             workflow_registry,
@@ -236,7 +233,7 @@ impl WorkflowFacade {
             .get_workflow(workflow_id)?
             .ok_or_else(|| format_err!("Invalid workflow ID"))?;
         if !workflow.status.is_active() {
-            self.state.store.mark_active(workflow_id)?;
+            self.state.store.mark_active(workflow_id, vec![])?;
         }
         self.workflow_runner
             .run(workflow)
