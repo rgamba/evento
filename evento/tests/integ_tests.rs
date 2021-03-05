@@ -244,8 +244,8 @@ fn integration_tests() {
     };
 
     let registry = SimpleWorkflowRegistryBuilder::default()
-        .add_factory(SimpleWorkflowFactory {})
-        .add_factory(WaitWorkflowFactory {})
+        .add_factory(SimpleWorkflowFactory::default())
+        .add_factory(WaitWorkflowFactory::default())
         .build();
 
     let executor = SimpleOperationExecutorBuilder::default()

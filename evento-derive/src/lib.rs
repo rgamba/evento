@@ -57,6 +57,11 @@ pub fn workflow(metadata: TokenStream, input: TokenStream) -> TokenStream {
     let factory_ident = syn::Ident::new(factory_name.as_str(), item.span());
     let factory_def = quote! {
         pub struct #factory_ident;
+        impl Default for #factory_ident {
+            fn default() -> Self {
+                Self{}
+            }
+        }
         impl evento::WorkflowFactory for #factory_ident {
             fn create(&self, id: evento::WorkflowId, correlation_id: evento::CorrelationId, context: evento::WorkflowContext, execution_results: Vec<evento::OperationResult>) -> Box<dyn evento::Workflow> {
                 Box::new(#struct_name::new(

@@ -494,7 +494,7 @@ macro_rules! _run_internal {
             .find_execution_result(operation_name.clone(), iteration)
         {
             $self.__state.increase_iteration_counter(&operation_name);
-            $crate::RunResult::Result(result.result.clone()) // See comment below.
+            $crate::RunResult::Result(result.result.clone().unwrap()) // Untyped result. We assume all results are Ok, so it's safe to unwrap
             $(
                 ; // Kind of a hack: if there is no return type, the previous line will return, otherwise
                 // this semi-colon will ignore the line above and continue with the line below as the last stmt.
