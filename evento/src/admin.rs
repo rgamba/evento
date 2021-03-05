@@ -1,4 +1,4 @@
-use crate::api::WorkflowFacade;
+use crate::api::Evento;
 use crate::state::WorkflowFilter;
 use crate::{OperationName, OperationResult, WorkflowData, WorkflowError};
 use actix_cors::Cors;
@@ -44,11 +44,11 @@ struct ReplayRequest {
 
 #[allow(dead_code)]
 pub struct Admin {
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 }
 
 impl Admin {
-    pub async fn new(facade: WorkflowFacade, port: u32) -> Result<()> {
+    pub async fn new(facade: Evento, port: u32) -> Result<()> {
         let data = web::Data::new(facade);
 
         task::spawn(async move {
@@ -70,7 +70,7 @@ impl Admin {
                                 .route("/{workflow_id}/retry", web::get().to(retry_workflow))
                                 .route("/{workflow_id}", web::get().to(view_workflow))
                                 .route("", web::get().to(list_workflows))
-                                //.route("/{workflow_id}/cancel", web::post().to(cancel_workflow))
+                                .route("/{workflow_id}/cancel", web::get().to(cancel_workflow))
                                 //.route("/{workflow_id}/replay", web::post().to(replay_workflow))
                                 // .route(
                                 //     "/complete_external/{external_key}",
@@ -96,13 +96,13 @@ impl Admin {
     }
 }
 
-async fn index(_facade: web::Data<WorkflowFacade>) -> HttpResponse {
+async fn index(_facade: web::Data<Evento>) -> HttpResponse {
     let html = include_str!("./admin_files/index.html");
     HttpResponse::Ok().content_type("text/html").body(html)
 }
 
 async fn list_workflows(
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<ListResult<WorkflowData>>, WorkflowError> {
     let filter = WorkflowFilter {
         name: None,
@@ -126,7 +126,7 @@ async fn list_workflows(
 
 async fn view_workflow(
     workflow_id: Path<Uuid>,
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<WorkflowData>, WorkflowError> {
     let wf = facade
         .get_workflow_by_id(workflow_id.into_inner())?
@@ -134,9 +134,17 @@ async fn view_workflow(
     Ok(Json(wf))
 }
 
+async fn cancel_workflow(
+    workflow_id: Path<Uuid>,
+    facade: web::Data<Evento>,
+) -> Result<Json<()>, WorkflowError> {
+    facade.cancel_workflow(workflow_id.into_inner(), String::new())?;
+    Ok(Json(()))
+}
+
 async fn retry_workflow(
     workflow_id: Path<Uuid>,
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<()>, WorkflowError> {
     facade.retry(workflow_id.into_inner())?;
     Ok(Json(()))
@@ -144,7 +152,7 @@ async fn retry_workflow(
 
 async fn view_workflow_history(
     workflow_id: Path<Uuid>,
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<ListResult<OperationResult>>, WorkflowError> {
     let results = facade.get_operation_results(workflow_id.into_inner())?;
     let result = ListResult {
@@ -161,7 +169,7 @@ async fn view_workflow_history(
 
 async fn view_workflow_traces(
     workflow_id: Path<Uuid>,
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<ListResult<OperationResult>>, WorkflowError> {
     let results = facade.get_operation_execution_traces(workflow_id.into_inner())?;
     let result = ListResult {
@@ -179,7 +187,7 @@ async fn view_workflow_traces(
 async fn replay_workflow(
     workflow_id: Path<Uuid>,
     request: web::Json<ReplayRequest>,
-    facade: web::Data<WorkflowFacade>,
+    facade: web::Data<Evento>,
 ) -> Result<Json<()>, WorkflowError> {
     let workflow = facade
         .get_workflow_by_id(workflow_id.into_inner())?

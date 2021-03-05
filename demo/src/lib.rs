@@ -2,8 +2,8 @@ use actix_web::rt::blocking::run;
 use anyhow::{format_err, Result};
 use chrono::Utc;
 use evento::{
-    parse_input, run, wait, Operation, OperationInput, Workflow, WorkflowError,
-    WorkflowStatus, WaitParams,
+    parse_input, run, wait, Operation, OperationInput, WaitParams, Workflow, WorkflowError,
+    WorkflowStatus,
 };
 use evento_derive::workflow;
 use log;
@@ -22,18 +22,15 @@ impl Workflow for TestWorkflow {
         let users = run!(self, FetchUsers<Vec<User>>(self.context.keyword.clone()));
         log::debug!("GOT USERS: {:?}", users);
         if users.is_empty() {
-            return Err(WorkflowError::non_retriable_domain_error(
-                "No users found".to_string(),
-            ));
+            return self.completed_with_error("No users found");
         }
         let timeout = Utc::now()
             .checked_add_signed(chrono::Duration::seconds(30))
             .unwrap();
         let external_key = Uuid::new_v4();
         log::info!("External key for wait: {}", external_key);
-        let filtered =
-            wait!(self, WaitAndFilterUsers<Vec<User>>(users), WaitParams::new(external_key, timeout));
-        run!(self, StoreResult<bool>(filtered));
+        let filtered = wait!(self, WaitAndFilterUsers<Vec<User>>(users), WaitParams::new(external_key, timeout));
+        run!(self, StoreResult(filtered));
         Ok((WorkflowStatus::Completed))
     }
 }

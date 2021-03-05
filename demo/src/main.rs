@@ -4,7 +4,7 @@ use anyhow::format_err;
 use chrono::Utc;
 use demo::{FetchUsers, StoreResult, TestContext, TestWorkflowFactory, WaitAndFilterUsers};
 use evento::admin::Admin;
-use evento::api::WorkflowFacade;
+use evento::api::Evento;
 use evento::registry::{SimpleOperationExecutor, SimpleWorkflowRegistry};
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::{InMemoryStore, State};
@@ -17,7 +17,7 @@ use std::error::Error;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub type AppFacade = web::Data<WorkflowFacade>;
+pub type AppFacade = web::Data<Evento>;
 
 //TODO:add endpoint for completing external wait
 
@@ -42,7 +42,7 @@ async fn complete_external(
     Ok(Json(()))
 }
 
-fn create_facade() -> WorkflowFacade {
+fn create_facade() -> Evento {
     let state = State {
         store: Arc::new(InMemoryStore::default()),
     };
@@ -58,7 +58,7 @@ fn create_facade() -> WorkflowFacade {
     );
     let executor = Arc::new(SimpleOperationExecutor::new(operation_map));
     let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    WorkflowFacade::new(state.clone(), registry.clone(), executor.clone(), runner)
+    Evento::new(state.clone(), registry.clone(), executor.clone(), runner)
 }
 
 #[actix_web::main]

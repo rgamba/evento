@@ -1,9 +1,11 @@
-use crate::poller::{ExponentialBackoffRetryStrategy, FixedRetryStrategy, Poller};
-use crate::state::WorkflowFilter;
+use crate::poller::{ExponentialBackoffRetryStrategy, Poller};
+use crate::registry::{SimpleOperationExecutorBuilder, SimpleWorkflowRegistryBuilder};
+use crate::runners::AsyncWorkflowRunner;
+use crate::state::{Store, WorkflowFilter};
 use crate::{
-    state::State, CorrelationId, ExternalInputKey, OperationIteration, OperationName,
-    OperationResult, WorkflowContext, WorkflowData, WorkflowId, WorkflowName, WorkflowRunner,
-    WorkflowStatus,
+    state::State, CorrelationId, ExternalInputKey, Operation, OperationIteration, OperationName,
+    OperationResult, WorkflowContext, WorkflowData, WorkflowFactory, WorkflowId, WorkflowName,
+    WorkflowRunner, WorkflowStatus,
 };
 use crate::{OperationExecutor, WorkflowRegistry};
 use anyhow::{format_err, Result};
@@ -17,9 +19,48 @@ lazy_static! {
         DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(i64::MAX, 0), Utc);
 }
 
+pub struct EventoBuilder {
+    executor_builder: SimpleOperationExecutorBuilder,
+    registry_builder: SimpleWorkflowRegistryBuilder,
+    store: Arc<dyn Store>,
+}
+
+impl EventoBuilder {
+    pub fn new(store: impl Store + 'static) -> Self {
+        Self {
+            executor_builder: SimpleOperationExecutorBuilder::default(),
+            registry_builder: SimpleWorkflowRegistryBuilder::default(),
+            store: Arc::new(store),
+        }
+    }
+
+    pub fn register_workflow(&mut self, factory: impl WorkflowFactory + 'static) -> &mut Self {
+        self.registry_builder.add_factory(factory);
+        self
+    }
+
+    pub fn register_operation(&mut self, operation: impl Operation + 'static) -> &mut Self {
+        self.executor_builder.add(operation);
+        self
+    }
+
+    pub fn build(&self) -> Evento {
+        let registry = self.registry_builder.build();
+        let state = State {
+            store: self.store.clone(),
+        };
+        Evento::new(
+            state.clone(),
+            registry.clone(),
+            self.executor_builder.build(),
+            Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone())),
+        )
+    }
+}
+
 /// WorkflowFacade is the public interface to the workflow engine.
 #[derive(Clone)]
-pub struct WorkflowFacade {
+pub struct Evento {
     workflow_registry: Arc<dyn WorkflowRegistry>,
     operation_executor: Arc<dyn OperationExecutor>,
     workflow_runner: Arc<dyn WorkflowRunner>,
@@ -27,7 +68,7 @@ pub struct WorkflowFacade {
     poller: Poller,
 }
 
-impl WorkflowFacade {
+impl Evento {
     pub fn new(
         state: State,
         workflow_registry: Arc<dyn WorkflowRegistry>,
@@ -233,11 +274,20 @@ impl WorkflowFacade {
             .get_workflow(workflow_id)?
             .ok_or_else(|| format_err!("Invalid workflow ID"))?;
         if !workflow.status.is_active() {
-            self.state.store.mark_active(workflow_id, vec![])?;
+            self.state
+                .store
+                .mark_active(workflow_id, vec![])
+                .map_err(|e| {
+                    log::error!("Unable to mark the workflow as active: {:?}", e);
+                    format_err!("Workflow run returned the following error: {:?}", e)
+                })?;
         }
         self.workflow_runner
             .run(workflow)
-            .map_err(|e| format_err!("Workflow run returned the following error: {:?}", e))
+            .map_err(|e| {
+                log::error!("Error while running the workflow: {:?}", e);
+                format_err!("Workflow run returned the following error: {:?}", e)
+            })
             .map(|_| ())
     }
 
@@ -247,15 +297,28 @@ impl WorkflowFacade {
     /// # Arguments
     ///
     /// - `workflow_id` - The workflow ID    
-    pub fn cancel_workflow(&self, _workflow_id: WorkflowId) -> Result<WorkflowData> {
-        unimplemented!()
+    pub fn cancel_workflow(&self, workflow_id: WorkflowId, reason: String) -> Result<()> {
+        self.state
+            .store
+            .cancel_workflow(workflow_id, reason)
+            .map_err(|err| {
+                log::error!("Failed to get operation results. error={:?}", err);
+                format_err!("Unable to cancel workflow: {:?}", err)
+            })
+            .map(|_| ())
     }
 
+    /// Returns a list of workflows matching the filters.
+    ///
+    /// # Arguments
+    ///
+    /// - `filters` - The filters to use.
     pub fn get_workflows(&self, filters: WorkflowFilter) -> Result<Vec<WorkflowData>> {
         self.state.store.get_workflows(filters)
     }
 
     pub fn stop(&self) -> Result<()> {
-        self.poller.stop_polling()
+        self.poller.stop_polling()?;
+        self.workflow_runner.stop()
     }
 }

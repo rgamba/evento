@@ -55,6 +55,28 @@ impl WorkflowRunner for AsyncWorkflowRunner {
             .map_err(|e| format_err!("{:?}", e))?;
         result_receiver.recv().map_err(|e| format_err!("{:?}", e))?
     }
+
+    #[allow(unused_must_use)]
+    fn stop(&self) -> Result<()> {
+        log::info!("Stopping runner");
+        self.stop_state.store(1, Ordering::SeqCst);
+        // TODO:we should be able to send a None workflow data to signal a stop
+        self.run(WorkflowData {
+            id: Uuid::nil(),
+            name: "".to_string(),
+            correlation_id: "".to_string(),
+            status: WorkflowStatus::active(),
+            created_at: Utc::now(),
+            context: serde_json::Value::Null,
+        });
+        for _ in 0..1000 {
+            if self.stop_state.load(Ordering::SeqCst) == 2 {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        bail!("Runner thread did not stop")
+    }
 }
 
 impl AsyncWorkflowRunner {
@@ -240,28 +262,6 @@ impl AsyncWorkflowRunner {
             }
         }
         result
-    }
-
-    #[allow(unused_must_use)]
-    pub fn stop(&self) -> Result<()> {
-        log::info!("Stopping runner");
-        self.stop_state.store(1, Ordering::SeqCst);
-        // TODO:we should be able to send a None workflow data to signal a stop
-        self.run(WorkflowData {
-            id: Uuid::nil(),
-            name: "".to_string(),
-            correlation_id: "".to_string(),
-            status: WorkflowStatus::active(),
-            created_at: Utc::now(),
-            context: serde_json::Value::Null,
-        });
-        for _ in 0..1000 {
-            if self.stop_state.load(Ordering::SeqCst) == 2 {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        bail!("Runner thread did not stop")
     }
 }
 

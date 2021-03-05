@@ -470,7 +470,23 @@ pub mod tests {
         store.complete_workflow(wf_id).unwrap();
         let result =
             store.abort_workflow_with_error(wf_id, WorkflowError::internal_error(String::new()));
-        assert!(result.is_err())
+        assert!(result.is_err());
+        let result = store.cancel_workflow(wf_id, "test".to_string());
+        assert!(result.is_err());
+        // Completed workflows can be coerced back into active
+        let result = store.mark_active(wf_id, vec![]);
+        assert!(result.is_ok());
+        assert!(matches!(
+            store.get_workflow(wf_id).unwrap().unwrap().status,
+            WorkflowStatus::Active(_)
+        ));
+        // Active flows can be cancelled
+        let result = store.cancel_workflow(wf_id, "test".to_string());
+        assert!(result.is_ok());
+        assert!(matches!(
+            store.get_workflow(wf_id).unwrap().unwrap().status,
+            WorkflowStatus::Cancelled
+        ));
     }
 
     #[test]

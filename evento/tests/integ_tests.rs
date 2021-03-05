@@ -3,18 +3,17 @@ use chrono::Utc;
 use diesel::r2d2::{ConnectionManager, CustomizeConnection, Error, PoolError};
 use diesel::{Connection, PgConnection};
 use dotenv::dotenv;
-use evento::api::WorkflowFacade;
+use evento::api::{Evento, EventoBuilder};
 use evento::db::sql_store::{DbPool, PgPool, SqlStore};
 use evento::registry::{
     SimpleOperationExecutor, SimpleOperationExecutorBuilder, SimpleWorkflowRegistry,
     SimpleWorkflowRegistryBuilder,
 };
-use evento::runners::wait_for_workflow_to_complete;
 use evento::runners::AsyncWorkflowRunner;
 use evento::state::State;
 use evento::{
     operation_ok, parse_input, run, run_all, wait, Operation, OperationInput, WaitParams, Workflow,
-    WorkflowError, WorkflowFactory, WorkflowStatus,
+    WorkflowData, WorkflowError, WorkflowFactory, WorkflowId, WorkflowStatus,
 };
 use evento_derive::workflow;
 use lazy_static::lazy_static;
@@ -237,25 +236,16 @@ fn integration_tests() {
     dotenv().ok();
     env_logger::try_init().unwrap();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL is not set!");
-    let state = State {
-        store: Arc::new(SqlStore::new_with_pool(
-            new_test_db_pool(database_url.as_str()).unwrap(),
-        )),
-    };
-
-    let registry = SimpleWorkflowRegistryBuilder::default()
-        .add_factory(SimpleWorkflowFactory::default())
-        .add_factory(WaitWorkflowFactory::default())
+    let store = SqlStore::new_with_pool(new_test_db_pool(database_url.as_str()).unwrap());
+    let facade = EventoBuilder::new(store)
+        // Workflows
+        .register_workflow(SimpleWorkflowFactory::default())
+        .register_workflow(WaitWorkflowFactory::default())
+        // Operations
+        .register_operation(Echo {})
+        .register_operation(GetUsers {})
+        .register_operation(Approve {})
         .build();
-
-    let executor = SimpleOperationExecutorBuilder::default()
-        .add(Echo {})
-        .add(GetUsers {})
-        .add(Approve {})
-        .build();
-
-    let runner = Arc::new(AsyncWorkflowRunner::new(state.clone(), registry.clone()));
-    let facade = WorkflowFacade::new(state.clone(), registry, executor, runner.clone());
 
     let wf_id = facade
         .create_workflow(
@@ -274,7 +264,23 @@ fn integration_tests() {
         .complete_external(*WAIT_KEY_1, serde_json::Value::Bool(true))
         .unwrap();
 
-    wait_for_workflow_to_complete(wf_id, state, Duration::from_secs(5)).unwrap();
-    runner.stop().unwrap();
+    wait_for_workflow_to_complete(wf_id, &facade, Duration::from_secs(5));
     facade.stop().unwrap();
+}
+
+pub fn wait_for_workflow_to_complete(workflow_id: WorkflowId, facade: &Evento, timeout: Duration) {
+    let time_timeout = Utc::now()
+        .checked_add_signed(chrono::Duration::from_std(timeout).unwrap())
+        .unwrap();
+    loop {
+        assert!(
+            Utc::now().lt(&time_timeout),
+            "Workflow failed to reach completed status"
+        );
+        let wf = facade.get_workflow_by_id(workflow_id).unwrap().unwrap();
+        if let WorkflowStatus::Completed = wf.status {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }

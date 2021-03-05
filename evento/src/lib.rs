@@ -44,6 +44,12 @@ pub trait Workflow {
     ///
     /// This is the main function that will contain the implementation of the workflow.
     fn run(&self) -> Result<WorkflowStatus, WorkflowError>;
+
+    fn completed_with_error(&self, reason: &str) -> Result<WorkflowStatus, WorkflowError> {
+        Ok(WorkflowStatus::CompletedWithError(
+            WorkflowError::non_retriable_domain_error(reason.to_string()),
+        ))
+    }
 }
 
 #[cfg_attr(test, automock)]
@@ -427,6 +433,9 @@ pub trait WorkflowRunner: Send + Sync {
     ///
     /// * `workflow_data` - The data that uniquely identify the workflow to be ran.
     fn run(&self, workflow_data: WorkflowData) -> Result<WorkflowStatus, WorkflowError>;
+
+    /// Stop any long-running tasks used to process workflows in a graceful manner.
+    fn stop(&self) -> Result<()>;
 }
 
 /// Workflow registry is the bag of factories that is solely responsible for recreating
