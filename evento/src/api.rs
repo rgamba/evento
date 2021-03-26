@@ -308,7 +308,7 @@ impl Evento {
     ///
     /// # Arguments
     ///
-    /// - `workflow_id` - The workflow ID    
+    /// - `workflow_id` - The workflow ID
     pub fn cancel_workflow(&self, workflow_id: WorkflowId, reason: String) -> Result<()> {
         self.state
             .store
@@ -329,6 +329,12 @@ impl Evento {
         self.state.store.get_workflows(filters)
     }
 
+    /// Run the workflow immediately. Depending on the underlying runner implementation this
+    /// can be ran asynchronously, but the call will block until run has completed.
+    ///
+    /// # Arguments
+    ///
+    /// - `workflow_id` - The workflow ID
     pub fn run_workflow(&self, workflow_id: WorkflowId) -> Result<()> {
         let workflow = self
             .state

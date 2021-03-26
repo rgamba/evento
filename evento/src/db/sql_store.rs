@@ -408,11 +408,13 @@ impl Store for SqlStore {
                     AND iteration = $3
                 LIMIT 1
             )
+            AND workflow_id = $4
             "#;
             diesel::sql_query(sql)
                 .bind::<diesel::pg::types::sql_types::Uuid, _>(workflow_id)
                 .bind::<Varchar, _>(operation_name)
                 .bind::<Int4, _>(iteration as i32)
+                .bind::<diesel::pg::types::sql_types::Uuid, _>(workflow_id)
                 .execute(&con)?;
             let sql = r#"
             UPDATE operations_queue SET state = 'D'

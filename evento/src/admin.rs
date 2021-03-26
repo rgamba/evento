@@ -50,11 +50,14 @@ pub struct Admin {
 impl Admin {
     pub async fn new(facade: Evento, port: u32) -> Result<()> {
         let data = web::Data::new(facade);
+        let http_port = web::Data::new(port);
 
         task::spawn(async move {
             let data_clone = data.clone();
+            let http_port_clone = http_port.clone();
             loop {
                 let data = data_clone.clone();
+                let http_port = http_port_clone.clone();
                 log::info!("Starting admin http server...");
                 let server = HttpServer::new(move || {
                     let cors = Cors::permissive();
@@ -62,21 +65,20 @@ impl Admin {
                         .wrap(cors)
                         .wrap(middleware::Logger::default())
                         .app_data(data.clone())
+                        .app_data(http_port.clone())
                         .service(
                             web::scope("/workflows")
-                                .route("/{workflow_id}/history", web::get().to(view_workflow_history))
+                                .route(
+                                    "/{workflow_id}/history",
+                                    web::get().to(view_workflow_history),
+                                )
                                 .route("/{workflow_id}/traces", web::get().to(view_workflow_traces))
                                 .route("/{workflow_id}/replay", web::post().to(replay_workflow))
                                 .route("/{workflow_id}/retry", web::get().to(retry_workflow))
-                                .route("/{workflow_id}", web::get().to(view_workflow))
                                 .route("/{workflow_id}/cancel", web::get().to(cancel_workflow))
                                 .route("/{workflow_id}/run", web::get().to(run_workflow))
-                                .route("", web::get().to(list_workflows))
-                                //.route("/{workflow_id}/replay", web::post().to(replay_workflow))
-                                // .route(
-                                //     "/complete_external/{external_key}",
-                                //     web::post().to(complete_external),
-                                // ),
+                                .route("/{workflow_id}", web::get().to(view_workflow))
+                                .route("", web::get().to(list_workflows)),
                         )
                         .service(web::scope("/").route("", web::get().to(index)))
                 })
@@ -97,13 +99,16 @@ impl Admin {
     }
 }
 
-async fn index(_facade: web::Data<Evento>) -> HttpResponse {
-    let html = include_str!("./admin_files/index.html");
-    HttpResponse::Ok().content_type("text/html").body(html)
+async fn index(_facade: web::Data<Evento>, port: web::Data<u32>) -> HttpResponse {
+    let mut html = include_str!("./admin_files/index.html");
+    let port_str = port.into_inner().to_string();
+    let content = html.replace("<<PORT>>", port_str.as_str());
+    HttpResponse::Ok().content_type("text/html").body(content)
 }
 
 async fn list_workflows(
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<ListResult<WorkflowData>>, WorkflowError> {
     let filter = WorkflowFilter {
         name: None,
@@ -128,6 +133,7 @@ async fn list_workflows(
 async fn view_workflow(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<WorkflowData>, WorkflowError> {
     let wf = facade
         .get_workflow_by_id(workflow_id.into_inner())?
@@ -138,6 +144,7 @@ async fn view_workflow(
 async fn cancel_workflow(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<()>, WorkflowError> {
     facade.cancel_workflow(workflow_id.into_inner(), String::new())?;
     Ok(Json(()))
@@ -146,6 +153,7 @@ async fn cancel_workflow(
 async fn run_workflow(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<()>, WorkflowError> {
     facade.run_workflow(workflow_id.into_inner())?;
     Ok(Json(()))
@@ -154,6 +162,7 @@ async fn run_workflow(
 async fn retry_workflow(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<()>, WorkflowError> {
     facade.retry(workflow_id.into_inner())?;
     Ok(Json(()))
@@ -162,6 +171,7 @@ async fn retry_workflow(
 async fn view_workflow_history(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<ListResult<OperationResult>>, WorkflowError> {
     let results = facade.get_operation_results(workflow_id.into_inner())?;
     let result = ListResult {
@@ -179,6 +189,7 @@ async fn view_workflow_history(
 async fn view_workflow_traces(
     workflow_id: Path<Uuid>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<ListResult<OperationResult>>, WorkflowError> {
     let results = facade.get_operation_execution_traces(workflow_id.into_inner())?;
     let result = ListResult {
@@ -197,6 +208,7 @@ async fn replay_workflow(
     workflow_id: Path<Uuid>,
     request: web::Json<ReplayRequest>,
     facade: web::Data<Evento>,
+    _port: web::Data<u32>,
 ) -> Result<Json<()>, WorkflowError> {
     let workflow = facade
         .get_workflow_by_id(workflow_id.into_inner())?

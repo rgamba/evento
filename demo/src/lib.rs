@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// -------------------------------------------------------------------------------------------------
+// Workflows
+// -------------------------------------------------------------------------------------------------
+
 #[workflow]
 pub struct TestWorkflow {
     context: TestContext,
@@ -20,7 +24,6 @@ pub struct TestWorkflow {
 impl Workflow for TestWorkflow {
     fn run(&self) -> Result<WorkflowStatus, WorkflowError> {
         let users = run!(self, FetchUsers<Vec<User>>(self.context.keyword.clone()));
-        log::debug!("GOT USERS: {:?}", users);
         if users.is_empty() {
             return self.completed_with_error("No users found");
         }
@@ -28,7 +31,6 @@ impl Workflow for TestWorkflow {
             .checked_add_signed(chrono::Duration::seconds(30))
             .unwrap();
         let external_key = Uuid::new_v4();
-        log::info!("External key for wait: {}", external_key);
         let filtered = wait!(self, WaitAndFilterUsers<Vec<User>>(users), WaitParams::new(external_key, timeout));
         run!(self, StoreResult(filtered));
         Ok((WorkflowStatus::Completed))
@@ -40,6 +42,10 @@ pub struct TestContext {
     pub keyword: String,
     pub age_filter: u64,
 }
+
+// -------------------------------------------------------------------------------------------------
+// Operations
+// -------------------------------------------------------------------------------------------------
 
 pub struct FetchUsers;
 impl Operation for FetchUsers {
@@ -73,21 +79,6 @@ impl Operation for FetchUsers {
     {
         input.value::<String>().map(|_| ())
     }
-}
-
-fn test_fetch() {
-    let fetch = FetchUsers {};
-    let result = fetch
-        .execute(
-            OperationInput::new(
-                "".to_string(),
-                "".to_string(),
-                1,
-                serde_json::Value::String("test".to_string()),
-            )
-            .unwrap(),
-        )
-        .unwrap();
 }
 
 pub struct WaitAndFilterUsers;
